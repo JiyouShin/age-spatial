@@ -5831,6 +5831,48 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION ag_catalog.set_spatial_value(
+    p_graph_name name,
+    p_label_name name,
+    p_column_name name,
+    p_entity_id ag_catalog.graphid,
+    p_value @extschema:postgis@.geometry
+)
+    RETURNS void
+    LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM ag_catalog.set_geometry_value(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        p_entity_id,
+        p_value
+    );
+END;
+$$;
+
+CREATE FUNCTION ag_catalog.set_spatial_value(
+    p_graph_name name,
+    p_label_name name,
+    p_column_name name,
+    p_entity_id ag_catalog.graphid,
+    p_value @extschema:postgis@.geography
+)
+    RETURNS void
+    LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM ag_catalog.set_geography_value(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        p_entity_id,
+        p_value
+    );
+END;
+$$;
+
 CREATE FUNCTION ag_catalog.clear_spatial_value(
     p_graph_name name,
     p_label_name name,

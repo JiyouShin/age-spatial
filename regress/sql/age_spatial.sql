@@ -56,13 +56,13 @@ SELECT 'place_b', (b_id::text)::graphid FROM created
 UNION ALL
 SELECT 'road_ab', (road_id::text)::graphid FROM created;
 
-SELECT set_geometry_value(
-    'spatial_api_test',
-    'Place',
-    'geom',
-    id,
-    public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)
-)
+SELECT set_spatial_value(
+               'spatial_api_test',
+               'Place',
+               'geom',
+               id,
+               public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)
+       )
 FROM spatial_api_ids
 WHERE kind = 'place_a';
 
@@ -76,13 +76,13 @@ SELECT set_geometry_value(
 FROM spatial_api_ids
 WHERE kind = 'place_b';
 
-SELECT set_geography_value(
-    'spatial_api_test',
-    'Place',
-    'geog',
-    id,
-    public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)::public.geography
-)
+SELECT set_spatial_value(
+               'spatial_api_test',
+               'Place',
+               'geog',
+               id,
+               public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)::public.geography
+       )
 FROM spatial_api_ids
 WHERE kind = 'place_a';
 
