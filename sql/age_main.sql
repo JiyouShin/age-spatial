@@ -18,7 +18,7 @@
  */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
-\echo Use "CREATE EXTENSION age" to load this file. \quit
+\echo Use "CREATE EXTENSION age_spatial" to load this file. \quit
 
 --
 -- catalog tables

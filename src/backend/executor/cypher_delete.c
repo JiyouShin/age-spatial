@@ -29,6 +29,7 @@
 #include "catalog/ag_label.h"
 #include "executor/cypher_executor.h"
 #include "utils/age_global_graph.h"
+#include "utils/age_compat.h"
 #include "executor/cypher_utils.h"
 
 static void begin_cypher_delete(CustomScanState *node, EState *estate,
@@ -487,7 +488,7 @@ static void process_delete_list(CustomScanState *node)
             slot = table_slot_create(rel, NULL);
 
             index_rel = index_open(index_oid, RowExclusiveLock);
-            index_scan_desc = index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
+            index_scan_desc = age_index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
             index_rescan(index_scan_desc, scan_keys, 1, NULL, 0);
 
             if (index_getnext_slot(index_scan_desc, ForwardScanDirection, slot))
@@ -596,7 +597,7 @@ static void process_edges_by_index(Oid index_oid,
     slot = table_slot_create(rel, NULL);
 
     index_rel = index_open(index_oid, RowExclusiveLock);
-    scan = index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
+    scan = age_index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
 
     /* Initialize ScanKey with a dummy argument (0), updated in the loop */
     ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_GRAPHIDEQ, 0);

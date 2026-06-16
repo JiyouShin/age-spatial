@@ -136,6 +136,9 @@ HeapTuple insert_entity_tuple(ResultRelInfo *resultRelInfo,
 HeapTuple insert_entity_tuple_cid(ResultRelInfo *resultRelInfo,
                                   TupleTableSlot *elemTupleSlot,
                                   EState *estate, CommandId cid);
+void fill_entity_slot_extra_attrs(ResultRelInfo *resultRelInfo,
+                                  TupleTableSlot *elemTupleSlot,
+                                  HeapTuple old_tuple);
 
 /* RLS support */
 void setup_wcos(ResultRelInfo *resultRelInfo, EState *estate,

@@ -36,6 +36,7 @@
 #include "catalog/ag_label.h"
 #include "commands/label_commands.h"
 #include "executor/cypher_utils.h"
+#include "utils/age_compat.h"
 #include "utils/ag_cache.h"
 
 /* RLS helper function declarations */
@@ -53,6 +54,7 @@ static void add_security_quals(int rt_index, List *permissive_policies,
 static void sort_policies_by_name(List *policies);
 static int row_security_policy_cmp(const ListCell *a, const ListCell *b);
 static bool check_role_for_policy(ArrayType *policy_roles, Oid user_id);
+static bool is_age_entity_storage_column(const char *attname);
 
 /*
  * Given the graph name and the label name, create a ResultRelInfo for the table
@@ -195,6 +197,58 @@ TupleTableSlot *populate_edge_tts(
     return elemTupleSlot;
 }
 
+/*
+ * age-postgis add-on function
+ * AGE writes vertex/edge label tuples by directly filling the storage columns
+ * it owns. If users add physical columns to label tables, or if a dropped
+ * column remains in the tuple descriptor, those non-AGE attributes must still
+ * have deterministic slot values before PostgreSQL forms/inserts/updates the
+ * tuple.
+ *
+ * For INSERT, non-AGE columns are NULL. For UPDATE, preserve their previous
+ * values so a Cypher SET of properties does not erase user-managed columns
+ * such as PostGIS geometry columns.
+ */
+void fill_entity_slot_extra_attrs(ResultRelInfo *resultRelInfo,
+                                  TupleTableSlot *elemTupleSlot,
+                                  HeapTuple old_tuple)
+{
+    TupleDesc tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
+    int natts = tupdesc->natts;
+    int i;
+
+    for (i = 0; i < natts; i++)
+    {
+        Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+        const char *attname = NameStr(attr->attname);
+
+        if (attr->attisdropped || !is_age_entity_storage_column(attname))
+        {
+            bool isnull = true;
+            Datum value = (Datum)0;
+
+            if (!attr->attisdropped && old_tuple != NULL)
+            {
+                value = heap_getattr(old_tuple, i + 1, tupdesc, &isnull);
+            }
+
+            elemTupleSlot->tts_values[i] = value;
+            elemTupleSlot->tts_isnull[i] = isnull;
+        }
+    }
+}
+
+/*
+ * age-postgis add-on function
+*/
+static bool is_age_entity_storage_column(const char *attname)
+{
+    return (strcmp(attname, AG_VERTEX_COLNAME_ID) == 0 ||
+            strcmp(attname, AG_VERTEX_COLNAME_PROPERTIES) == 0 ||
+            strcmp(attname, AG_EDGE_COLNAME_START_ID) == 0 ||
+            strcmp(attname, AG_EDGE_COLNAME_END_ID) == 0);
+}
+
 
 /*
  * Find out if the entity still exists. This is for 'implicit' deletion
@@ -252,7 +306,7 @@ bool entity_exists(EState *estate, Oid graph_oid, graphid id)
 
         index_rel = index_open(index_oid, AccessShareLock);
 
-        index_scan_desc = index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
+        index_scan_desc = age_index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
         index_rescan(index_scan_desc, scan_keys, 1, NULL, 0);
 
         if (!index_getnext_slot(index_scan_desc, ForwardScanDirection, slot))
@@ -317,6 +371,7 @@ HeapTuple insert_entity_tuple_cid(ResultRelInfo *resultRelInfo,
 {
     HeapTuple tuple = NULL;
 
+    fill_entity_slot_extra_attrs(resultRelInfo, elemTupleSlot, NULL);
     ExecStoreVirtualTuple(elemTupleSlot);
     tuple = ExecFetchSlotHeapTuple(elemTupleSlot, true, NULL);
 

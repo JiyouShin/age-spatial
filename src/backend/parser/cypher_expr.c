@@ -110,6 +110,7 @@ static Node *wrap_text_output_to_agtype(cypher_parsestate *cpstate,
                                         FuncExpr *fexpr);
 static Form_pg_proc get_procform(FuncCall *fn, bool err_not_found);
 static char *get_mapped_extension(Oid func_oid);
+static bool is_age_extension(char *extension);
 static bool is_extension_external(char *extension);
 static char *construct_age_function_name(char *funcname);
 static bool function_exists(char *funcname, char *extension);
@@ -1999,8 +2000,14 @@ static char *get_mapped_extension(Oid func_oid)
 
 static bool is_extension_external(char *extension)
 {
+    return ((extension != NULL) && !is_age_extension(extension));
+}
+
+static bool is_age_extension(char *extension)
+{
     return ((extension != NULL) &&
-            (pg_strcasecmp(extension, "age") != 0));
+            (pg_strcasecmp(extension, "age") == 0 ||
+             pg_strcasecmp(extension, "age_spatial") == 0));
 }
 
 /* Returns age_ prefiexed lower case function name */
@@ -2259,7 +2266,8 @@ static Node *transform_FuncCall(cypher_parsestate *cpstate, FuncCall *fn)
         char *name = strVal(linitial(fn->funcname));
         char *ag_name = construct_age_function_name(name);
 
-        if (function_exists(ag_name, "age"))
+        if (function_exists(ag_name, "age_spatial") ||
+            function_exists(ag_name, "age"))
         {
             /* qualify the name with our schema name */
             fname = list_make2(makeString("ag_catalog"), makeString(ag_name));

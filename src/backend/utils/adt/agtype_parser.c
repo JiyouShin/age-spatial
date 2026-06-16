@@ -38,6 +38,7 @@
 #include "utils/datetime.h"
 #include "utils/varlena.h"
 
+#include "utils/age_compat.h"
 #include "utils/agtype.h"
 #include "utils/agtype_parser.h"
 

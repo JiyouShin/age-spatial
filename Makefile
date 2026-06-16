@@ -15,24 +15,27 @@
 # specific language governing permissions and limitations
 # under the License.
 
+EXTENSION_NAME = age_spatial
+EXTENSION_CONTROL = $(EXTENSION_NAME).control
+
 MODULE_big = age
 
-age_sql = age--1.7.0.sql
+age_sql = $(EXTENSION_NAME)--1.7.0.sql
 
 # --- Extension upgrade regression test support ---
 #
-# Validates the upgrade template (age--<VER>--y.y.y.sql) by simulating an
+# Validates the upgrade template ($(EXTENSION_NAME)--<VER>--y.y.y.sql) by simulating an
 # extension version upgrade entirely within "make installcheck". The test:
 #
-#   1. Builds the default install SQL (age--<CURR>.sql) from current HEAD's
-#      sql/sql_files. This is what CREATE EXTENSION age installs.
+#   1. Builds the default install SQL ($(EXTENSION_NAME)--<CURR>.sql) from
+#      current HEAD's sql/sql_files. This is what CREATE EXTENSION age_spatial installs.
 #   2. Builds a synthetic "initial" version install SQL from the version-bump
 #      commit in git history. This represents the pre-upgrade state.
 #   3. Stamps the upgrade template to upgrade from the initial version to the
 #      current version.
 #   4. Temporarily installs the synthetic files into the PG extension directory
-#      so that CREATE EXTENSION age VERSION '<INIT>' and ALTER EXTENSION
-#      age UPDATE TO '<CURR>' can find them.
+#      so that CREATE EXTENSION age_spatial VERSION '<INIT>' and
+#      ALTER EXTENSION age_spatial UPDATE TO '<CURR>' can find them.
 #   5. The age_upgrade regression test snapshots the ag_catalog schema from
 #      a fresh install, then installs at INIT, upgrades to CURR, and compares
 #      the catalog across seven system catalogs to detect missing, extra,
@@ -48,29 +51,29 @@ age_sql = age--1.7.0.sql
 #
 # Graceful degradation — the upgrade test is silently skipped when:
 #   - No git history (tarball build): AGE_VER_COMMIT is empty.
-#   - No upgrade template: age--<CURR>--y.y.y.sql does not exist.
+#   - No upgrade template: $(EXTENSION_NAME)--<CURR>--y.y.y.sql does not exist.
 #   - A real (git-tracked) upgrade script from <CURR> already exists
-#     (e.g., age--1.7.0--1.8.0.sql is committed): the synthetic test is
+#     (e.g., age_spatial--1.7.0--1.8.0.sql is committed): the synthetic test is
 #     redundant because the real script ships with the extension.
-# Current version from age.control (e.g., "1.7.0")
-AGE_CURR_VER := $(shell awk -F"'" '/default_version/ {print $$2}' age.control 2>/dev/null)
-# Git commit that last changed age.control — the "initial release" commit
-AGE_VER_COMMIT := $(shell git log -1 --format=%H -- age.control 2>/dev/null)
+# Current version from the extension control file (e.g., "1.7.0")
+AGE_CURR_VER := $(shell awk -F"'" '/default_version/ {print $$2}' $(EXTENSION_CONTROL) 2>/dev/null)
+# Git commit that last changed the control file — the "initial release" commit
+AGE_VER_COMMIT := $(shell git log -1 --format=%H -- $(EXTENSION_CONTROL) 2>/dev/null)
 # Synthetic initial version: current version with _initial suffix
 AGE_INIT_VER := $(AGE_CURR_VER)_initial
-# The upgrade template file (e.g., age--1.7.0--y.y.y.sql); empty if not present
-AGE_UPGRADE_TEMPLATE := $(wildcard age--$(AGE_CURR_VER)--y.y.y.sql)
+# The upgrade template file (e.g., age_spatial--1.7.0--y.y.y.sql); empty if not present
+AGE_UPGRADE_TEMPLATE := $(wildcard $(EXTENSION_NAME)--$(AGE_CURR_VER)--y.y.y.sql)
 
 # Synthetic filenames — these are NOT installed permanently; they are temporarily
 # placed in $(SHAREDIR)/extension/ during installcheck and removed after.
-age_init_sql = $(if $(AGE_INIT_VER),age--$(AGE_INIT_VER).sql)
-age_upgrade_test_sql = $(if $(AGE_INIT_VER),age--$(AGE_INIT_VER)--$(AGE_CURR_VER).sql)
+age_init_sql = $(if $(AGE_INIT_VER),$(EXTENSION_NAME)--$(AGE_INIT_VER).sql)
+age_upgrade_test_sql = $(if $(AGE_INIT_VER),$(EXTENSION_NAME)--$(AGE_INIT_VER)--$(AGE_CURR_VER).sql)
 
 # Real (git-tracked, non-template) upgrade scripts FROM the current version.
-# If any exist (e.g., age--1.7.0--1.8.0.sql is committed), the synthetic
+# If any exist (e.g., age_spatial--1.7.0--1.8.0.sql is committed), the synthetic
 # upgrade test is redundant because a real upgrade path already ships.
 # Uses git ls-files so untracked synthetic files are NOT matched.
-AGE_REAL_UPGRADE := $(shell git ls-files 'age--$(AGE_CURR_VER)--*.sql' 2>/dev/null | grep -v 'y\.y\.y')
+AGE_REAL_UPGRADE := $(shell git ls-files '$(EXTENSION_NAME)--$(AGE_CURR_VER)--*.sql' 2>/dev/null | grep -v 'y\.y\.y')
 
 # Non-empty when ALL of these hold:
 #   1. Git history is available (AGE_VER_COMMIT non-empty)
@@ -134,10 +137,10 @@ OBJS = src/backend/age.o \
        src/backend/utils/name_validation.o \
        src/backend/utils/ag_guc.o
 
-EXTENSION = age
+EXTENSION = $(EXTENSION_NAME)
 
-# to allow cleaning of previous (old) age--.sql files
-all_age_sql = $(shell find . -maxdepth 1 -type f -regex './age--[0-9]+\.[0-9]+\.[0-9]+\.sql')
+# to allow cleaning of generated extension install SQL files
+all_age_sql = $(age_sql)
 
 SQLS := $(shell cat sql/sql_files)
 SQLS := $(addprefix sql/,$(SQLS))
@@ -145,9 +148,9 @@ SQLS := $(addsuffix .sql,$(SQLS))
 
 DATA_built = $(age_sql)
 
-# Git-tracked upgrade scripts shipped with the extension (e.g., age--1.6.0--1.7.0.sql).
+# Git-tracked upgrade scripts shipped with the extension (e.g., age_spatial--1.6.0--1.7.0.sql).
 # Excludes the upgrade template (y.y.y) and the synthetic stamped test file.
-DATA = $(filter-out age--%-y.y.y.sql $(age_upgrade_test_sql),$(wildcard age--*--*.sql))
+DATA = $(filter-out $(EXTENSION_NAME)--%-y.y.y.sql $(age_upgrade_test_sql),$(wildcard $(EXTENSION_NAME)--*--*.sql))
 
 # sorted in dependency order
 REGRESS = scan \
@@ -235,8 +238,8 @@ src/backend/parser/cypher_parser.bc: src/backend/parser/cypher_gram.c src/includ
 src/backend/parser/cypher_keywords.o: src/backend/parser/cypher_gram.c src/include/parser/cypher_gram_def.h
 src/backend/parser/cypher_keywords.bc: src/backend/parser/cypher_gram.c src/include/parser/cypher_gram_def.h
 
-# Build the default install SQL (age--<VER>.sql) from current HEAD's sql/sql_files.
-# This is what CREATE EXTENSION age installs — it contains ALL current functions.
+# Build the default install SQL ($(EXTENSION_NAME)--<VER>.sql) from current HEAD's sql/sql_files.
+# This is what CREATE EXTENSION age_spatial installs — it contains ALL current functions.
 # All 31 non-upgrade regression tests run against this complete SQL.
 $(age_sql): $(SQLS)
 	@echo "Building install SQL: $@ from HEAD"
@@ -248,9 +251,9 @@ endif
 
 # Build synthetic "initial" version install SQL from the version-bump commit.
 # This represents the pre-upgrade state — the SQL at the time the version was
-# bumped in age.control. Used only by the upgrade test.
+# bumped in the extension control file. Used only by the upgrade test.
 ifneq ($(AGE_HAS_UPGRADE_TEST),)
-$(age_init_sql): age.control
+$(age_init_sql): $(EXTENSION_CONTROL)
 	@echo "Building synthetic initial version install SQL: $@ from commit $(AGE_VER_COMMIT)"
 	@for f in $$(git show $(AGE_VER_COMMIT):sql/sql_files 2>/dev/null); do \
 		git show $(AGE_VER_COMMIT):sql/$${f}.sql 2>/dev/null; \
@@ -269,7 +272,7 @@ src/backend/parser/ag_scanner.c: FLEX_NO_BACKUP=yes
 
 # --- Upgrade test file lifecycle during installcheck ---
 #
-# Problem: The upgrade test needs age--<INIT>.sql and age--<INIT>--<CURR>.sql
+# Problem: The upgrade test needs $(EXTENSION_NAME)--<INIT>.sql and $(EXTENSION_NAME)--<INIT>--<CURR>.sql
 # in the PG extension directory for CREATE EXTENSION VERSION and ALTER
 # EXTENSION UPDATE to find them, but we must not leave them installed
 # permanently (they would confuse users).

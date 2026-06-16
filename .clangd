@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/age/src/include
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/age/src/include/parser
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/dev/pg16-debug/include
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/dev/pg16-debug/include/server
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/dev/pg16-debug/include/server/utils
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/dev/pg16-debug/include/server/parser
+    - -I/Users/gu/Documents/Codex/2026-06-15/postgresql-extension-apacheage-postgis-2-extension/work/dev/pg16-debug/include/server/catalog
+    - -D_GNU_SOURCE

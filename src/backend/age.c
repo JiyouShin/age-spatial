@@ -26,6 +26,7 @@
 
 #if PG_VERSION_NUM < 170000
 #include "miscadmin.h"
+#include "storage/ipc.h"
 
 /* saved hook pointers for PG < 17 shmem path */
 static shmem_request_hook_type prev_shmem_request_hook = NULL;

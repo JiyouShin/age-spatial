@@ -50,6 +50,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "executor/cypher_utils.h"
+#include "utils/age_compat.h"
 #include "utils/float.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
@@ -6165,8 +6166,8 @@ static Datum get_vertex(const char *graph, const char *vertex_label,
         ScanKeyInit(&scan_keys[0], 1, BTEqualStrategyNumber,
                     F_GRAPHIDEQ, Int64GetDatum(graphid));
 
-        index_scan_desc = index_beginscan(graph_vertex_label, index_rel, 
-                                          snapshot, NULL, 1, 0);
+        index_scan_desc = age_index_beginscan(graph_vertex_label, index_rel,
+                                              snapshot, NULL, 1, 0);
         index_rescan(index_scan_desc, scan_keys, 1, NULL, 0);
 
         if (index_getnext_slot(index_scan_desc, ForwardScanDirection, slot))

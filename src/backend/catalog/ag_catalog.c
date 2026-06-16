@@ -31,6 +31,7 @@
 
 #include "catalog/ag_graph.h"
 #include "catalog/ag_label.h"
+#include "commands/label_commands.h"
 #include "utils/ag_cache.h"
 #include "utils/age_global_graph.h"
 
@@ -47,6 +48,8 @@ void ag_ProcessUtility_hook(PlannedStmt *pstmt, const char *queryString, bool re
 
 static bool is_age_drop(PlannedStmt *pstmt);
 static void drop_age_extension(DropStmt *stmt);
+static bool is_age_extension_name(const char *name);
+static bool is_age_entity_storage_column(const char *attname);
 
 void object_access_hook_init(void)
 {
@@ -183,12 +186,18 @@ static bool is_age_drop(PlannedStmt *pstmt)
             String *val = (String *)obj;
             char *str = val->sval;
 
-            if (!pg_strcasecmp(str, "age"))
+            if (is_age_extension_name(str))
                 return true;
         }
     }
 
     return false;
+}
+
+static bool is_age_extension_name(const char *name)
+{
+    return (pg_strcasecmp(name, "age") == 0 ||
+            pg_strcasecmp(name, "age_spatial") == 0);
 }
 
 /*
@@ -258,6 +267,30 @@ static void object_access(ObjectAccessType access, Oid class_id, Oid object_id,
         if (!cache_data)
             return;
 
+        /*
+         * DROP COLUMN is reported as a drop on the label table relation with
+         * sub_id set to the attribute number. AGE owns only its fixed storage
+         * columns; user-added physical columns, such as PostGIS geometry or
+         * geography columns, may be dropped without deleting the label itself.
+         */
+        if (sub_id > 0)
+        {
+            char *attname = get_attname(object_id, sub_id, true);
+
+            if (attname == NULL)
+                return;
+
+            if (is_age_entity_storage_column(attname))
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
+                         errmsg("column \"%s\" is an AGE storage column for label \"%s\"",
+                                attname, NameStr(cache_data->name))));
+            }
+
+            return;
+        }
+
         if (drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
         {
             /*
@@ -276,6 +309,14 @@ static void object_access(ObjectAccessType access, Oid class_id, Oid object_id,
                                    relname, NameStr(cache_data->name))));
         }
     }
+}
+
+static bool is_age_entity_storage_column(const char *attname)
+{
+    return (strcmp(attname, AG_VERTEX_COLNAME_ID) == 0 ||
+            strcmp(attname, AG_VERTEX_COLNAME_PROPERTIES) == 0 ||
+            strcmp(attname, AG_EDGE_COLNAME_START_ID) == 0 ||
+            strcmp(attname, AG_EDGE_COLNAME_END_ID) == 0);
 }
 
 Oid ag_relation_id(const char *name, const char *kind)

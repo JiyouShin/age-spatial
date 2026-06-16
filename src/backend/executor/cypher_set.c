@@ -28,6 +28,7 @@
 #include "executor/cypher_utils.h"
 #include "utils/age_global_graph.h"
 #include "catalog/ag_graph.h"
+#include "utils/age_compat.h"
 #include "utils/agtype.h"
 
 static void begin_cypher_set(CustomScanState *node, EState *estate,
@@ -130,6 +131,7 @@ static HeapTuple update_entity_tuple(ResultRelInfo *resultRelInfo,
             ExecOpenIndices(resultRelInfo, false);
             close_indices = true;
         }
+        fill_entity_slot_extra_attrs(resultRelInfo, elemTupleSlot, old_tuple);
         ExecStoreVirtualTuple(elemTupleSlot);
         tuple = ExecFetchSlotHeapTuple(elemTupleSlot, true, NULL);
         tuple->t_self = old_tuple->t_self;
@@ -707,7 +709,7 @@ void apply_update_list(CustomScanState *node,
                             GRAPHID_GET_DATUM(id->val.int_value));
 
                 index_slot = table_slot_create(rel, NULL);
-                idx_scan_desc = index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
+                idx_scan_desc = age_index_beginscan(rel, index_rel, estate->es_snapshot, NULL, 1, 0);
                 index_rescan(idx_scan_desc, scan_keys, 1, NULL, 0);
 
                 if (index_getnext_slot(idx_scan_desc, ForwardScanDirection, index_slot))

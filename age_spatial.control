@@ -16,7 +16,8 @@
 # under the License.
 
 default_version = '1.7.0'
-comment = 'AGE database extension'
+comment = 'AGE Spatial database extension'
 module_pathname = '$libdir/age'
 
 schema = 'ag_catalog'
+requires = 'postgis'

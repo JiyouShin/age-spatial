@@ -25,6 +25,7 @@
 #include "common/hashfn.h"
 #include "commands/label_commands.h"
 #include "port/atomics.h"
+#include "storage/bufmgr.h"
 #include "storage/lwlock.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -40,6 +41,7 @@
 #endif
 
 #include "utils/age_global_graph.h"
+#include "utils/age_compat.h"
 #include "utils/agehash.h"
 #include "catalog/ag_graph.h"
 #include "catalog/ag_label.h"
@@ -417,7 +419,7 @@ static List *get_ag_labels_names(Snapshot snapshot, Oid graph_oid,
         ScanKeyInit(&key, 1, BTEqualStrategyNumber,
                     F_OIDEQ, ObjectIdGetDatum(graph_oid));
 
-        idx_scan_desc = index_beginscan(ag_label, index_rel, snapshot, NULL, 1, 0);
+        idx_scan_desc = age_index_beginscan(ag_label, index_rel, snapshot, NULL, 1, 0);
         index_rescan(idx_scan_desc, &key, 1, NULL, 0);
 
         while (index_getnext_slot(idx_scan_desc, ForwardScanDirection, slot))
