@@ -1,0 +1,368 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+LOAD 'age';
+SET search_path TO ag_catalog, public;
+SELECT create_graph('spatial_api_test');
+NOTICE:  graph "spatial_api_test" has been created
+ create_graph 
+--------------
+ 
+(1 row)
+
+SELECT create_vlabel('spatial_api_test', 'Place');
+NOTICE:  VLabel "Place" has been created
+ create_vlabel 
+---------------
+ 
+(1 row)
+
+SELECT create_elabel('spatial_api_test', 'ROAD');
+NOTICE:  ELabel "ROAD" has been created
+ create_elabel 
+---------------
+ 
+(1 row)
+
+-- Register spatial columns on both vertex and edge label tables.
+SELECT add_geometry_column('spatial_api_test', 'Place', 'geom', 'Point', 4326, true);
+ add_geometry_column 
+---------------------
+ 
+(1 row)
+
+SELECT add_geography_column('spatial_api_test', 'Place', 'geog', 'Point', 4326, true);
+ add_geography_column 
+----------------------
+ 
+(1 row)
+
+SELECT add_geometry_column('spatial_api_test', 'ROAD', 'geom', 'LineString', 4326, true);
+ add_geometry_column 
+---------------------
+ 
+(1 row)
+
+SELECT add_geography_column('spatial_api_test', 'ROAD', 'geog', 'LineString', 4326, true);
+ add_geography_column 
+----------------------
+ 
+(1 row)
+
+-- This column is dropped through normal SQL first, then cleaned up through the
+-- age_spatial API to validate both paths.
+SELECT add_geometry_column('spatial_api_test', 'Place', 'sql_drop_geom', 'Point', 4326, true);
+ add_geometry_column 
+---------------------
+ 
+(1 row)
+
+SELECT label_name, column_name, spatial_type, geometry_type, srid,
+       index_name IS NOT NULL AS has_index
+FROM ag_spatial_columns
+WHERE graph_name = 'spatial_api_test'
+ORDER BY label_name, column_name;
+ label_name |  column_name  | spatial_type | geometry_type | srid | has_index 
+------------+---------------+--------------+---------------+------+-----------
+ Place      | geog          | geography    | Point         | 4326 | t
+ Place      | geom          | geometry     | Point         | 4326 | t
+ Place      | sql_drop_geom | geometry     | Point         | 4326 | t
+ ROAD       | geog          | geography    | LineString    | 4326 | t
+ ROAD       | geom          | geometry     | LineString    | 4326 | t
+(5 rows)
+
+CREATE TEMP TABLE spatial_api_ids(kind text PRIMARY KEY, id graphid);
+WITH created AS (
+    SELECT *
+    FROM cypher('spatial_api_test', $$
+        CREATE (a:Place {name: 'A'})-[r:ROAD {name: 'A to B'}]->(b:Place {name: 'B'})
+        RETURN id(a), id(b), id(r)
+    $$) AS (a_id agtype, b_id agtype, road_id agtype)
+)
+INSERT INTO spatial_api_ids(kind, id)
+SELECT 'place_a', (a_id::text)::graphid FROM created
+UNION ALL
+SELECT 'place_b', (b_id::text)::graphid FROM created
+UNION ALL
+SELECT 'road_ab', (road_id::text)::graphid FROM created;
+SELECT set_geometry_value(
+    'spatial_api_test',
+    'Place',
+    'geom',
+    id,
+    public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)
+)
+FROM spatial_api_ids
+WHERE kind = 'place_a';
+ set_geometry_value 
+--------------------
+ 
+(1 row)
+
+SELECT set_geometry_value(
+    'spatial_api_test',
+    'Place',
+    'geom',
+    id,
+    public.ST_SetSRID(public.ST_MakePoint(127.1, 37.1), 4326)
+)
+FROM spatial_api_ids
+WHERE kind = 'place_b';
+ set_geometry_value 
+--------------------
+ 
+(1 row)
+
+SELECT set_geography_value(
+    'spatial_api_test',
+    'Place',
+    'geog',
+    id,
+    public.ST_SetSRID(public.ST_MakePoint(127.0, 37.0), 4326)::public.geography
+)
+FROM spatial_api_ids
+WHERE kind = 'place_a';
+ set_geography_value 
+---------------------
+ 
+(1 row)
+
+SELECT set_geography_value(
+    'spatial_api_test',
+    'Place',
+    'geog',
+    id,
+    public.ST_SetSRID(public.ST_MakePoint(127.1, 37.1), 4326)::public.geography
+)
+FROM spatial_api_ids
+WHERE kind = 'place_b';
+ set_geography_value 
+---------------------
+ 
+(1 row)
+
+SELECT set_geometry_value(
+    'spatial_api_test',
+    'ROAD',
+    'geom',
+    id,
+    public.ST_SetSRID(
+        public.ST_MakeLine(
+            public.ST_MakePoint(127.0, 37.0),
+            public.ST_MakePoint(127.1, 37.1)
+        ),
+        4326
+    )
+)
+FROM spatial_api_ids
+WHERE kind = 'road_ab';
+ set_geometry_value 
+--------------------
+ 
+(1 row)
+
+SELECT set_geography_value(
+    'spatial_api_test',
+    'ROAD',
+    'geog',
+    id,
+    public.ST_SetSRID(
+        public.ST_MakeLine(
+            public.ST_MakePoint(127.0, 37.0),
+            public.ST_MakePoint(127.1, 37.1)
+        ),
+        4326
+    )::public.geography
+)
+FROM spatial_api_ids
+WHERE kind = 'road_ab';
+ set_geography_value 
+---------------------
+ 
+(1 row)
+
+SELECT (properties::text)::jsonb ->> 'name' AS name,
+       public.ST_AsText(geom) AS geom_wkt,
+       public.ST_AsText(geog::public.geometry) AS geog_wkt,
+       public.ST_SRID(geom) AS geom_srid,
+       public.ST_SRID(geog::public.geometry) AS geog_srid
+FROM spatial_api_test."Place"
+ORDER BY name;
+ name |     geom_wkt      |     geog_wkt      | geom_srid | geog_srid 
+------+-------------------+-------------------+-----------+-----------
+ A    | POINT(127 37)     | POINT(127 37)     |      4326 |      4326
+ B    | POINT(127.1 37.1) | POINT(127.1 37.1) |      4326 |      4326
+(2 rows)
+
+SELECT count(*) AS road_count,
+       count(geom) AS road_geom_count,
+       count(geog) AS road_geog_count,
+       string_agg(public.ST_AsText(geom), ',' ORDER BY id) AS road_geom_wkt
+FROM spatial_api_test."ROAD";
+ road_count | road_geom_count | road_geog_count |         road_geom_wkt         
+------------+-----------------+-----------------+-------------------------------
+          1 |               1 |               1 | LINESTRING(127 37,127.1 37.1)
+(1 row)
+
+-- Re-setting a spatial value is the update path for spatial columns.
+SELECT set_geometry_value(
+    'spatial_api_test',
+    'Place',
+    'geom',
+    id,
+    public.ST_SetSRID(public.ST_MakePoint(128.0, 38.0), 4326)
+)
+FROM spatial_api_ids
+WHERE kind = 'place_a';
+ set_geometry_value 
+--------------------
+ 
+(1 row)
+
+-- Cypher SET must preserve user-managed geometry/geography columns.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p.checked = true
+    RETURN count(p)
+$$) AS (updated agtype);
+ updated 
+---------
+ 2
+(1 row)
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (:Place)-[r:ROAD]->(:Place)
+    SET r.checked = true
+    RETURN count(r)
+$$) AS (updated agtype);
+ updated 
+---------
+ 1
+(1 row)
+
+SELECT (properties::text)::jsonb ->> 'name' AS name,
+       ((properties::text)::jsonb ->> 'checked')::boolean AS checked,
+       public.ST_AsText(geom) AS geom_wkt,
+       public.ST_AsText(geog::public.geometry) AS geog_wkt
+FROM spatial_api_test."Place"
+ORDER BY name;
+ name | checked |     geom_wkt      |     geog_wkt      
+------+---------+-------------------+-------------------
+ A    | t       | POINT(128 38)     | POINT(127 37)
+ B    | t       | POINT(127.1 37.1) | POINT(127.1 37.1)
+(2 rows)
+
+SELECT count(*) AS road_count,
+       count(geom) AS road_geom_count,
+       count(geog) AS road_geog_count,
+       bool_and(((properties::text)::jsonb ->> 'checked')::boolean) AS road_checked
+FROM spatial_api_test."ROAD";
+ road_count | road_geom_count | road_geog_count | road_checked 
+------------+-----------------+-----------------+--------------
+          1 |               1 |               1 | t
+(1 row)
+
+-- clear_spatial_value() should set the target value to NULL without touching
+-- the other spatial column.
+SELECT clear_spatial_value('spatial_api_test', 'Place', 'geog', id)
+FROM spatial_api_ids
+WHERE kind = 'place_b';
+ clear_spatial_value 
+---------------------
+ 
+(1 row)
+
+SELECT count(geom) AS place_geom_count,
+       count(geog) AS place_geog_count
+FROM spatial_api_test."Place";
+ place_geom_count | place_geog_count 
+------------------+------------------
+                2 |                1
+(1 row)
+
+-- Validate normal SQL DROP COLUMN is allowed for non-AGE columns, then use the
+-- API to remove the stale metadata left by direct SQL.
+ALTER TABLE spatial_api_test."Place" DROP COLUMN sql_drop_geom;
+SELECT drop_spatial_column('spatial_api_test', 'Place', 'sql_drop_geom');
+NOTICE:  index "place_sql_drop_geom_gix" does not exist, skipping
+NOTICE:  column "sql_drop_geom" of relation "Place" does not exist, skipping
+ drop_spatial_column 
+---------------------
+ 
+(1 row)
+
+SELECT drop_spatial_column('spatial_api_test', 'Place', 'geog');
+ drop_spatial_column 
+---------------------
+ 
+(1 row)
+
+SELECT drop_spatial_column('spatial_api_test', 'Place', 'geom');
+ drop_spatial_column 
+---------------------
+ 
+(1 row)
+
+SELECT drop_spatial_column('spatial_api_test', 'ROAD', 'geog');
+ drop_spatial_column 
+---------------------
+ 
+(1 row)
+
+SELECT drop_spatial_column('spatial_api_test', 'ROAD', 'geom');
+ drop_spatial_column 
+---------------------
+ 
+(1 row)
+
+SELECT count(*) AS remaining_spatial_columns
+FROM ag_spatial_columns
+WHERE graph_name = 'spatial_api_test';
+ remaining_spatial_columns 
+---------------------------
+                         0
+(1 row)
+
+SELECT table_name,
+       string_agg(column_name, ',' ORDER BY ordinal_position) AS columns
+FROM information_schema.columns
+WHERE table_schema = 'spatial_api_test'
+  AND table_name IN ('Place', 'ROAD')
+GROUP BY table_name
+ORDER BY table_name;
+ table_name |            columns            
+------------+-------------------------------
+ Place      | id,properties
+ ROAD       | id,start_id,end_id,properties
+(2 rows)
+
+DROP TABLE spatial_api_ids;
+SELECT drop_graph('spatial_api_test', true);
+NOTICE:  drop cascades to 4 other objects
+DETAIL:  drop cascades to table spatial_api_test._ag_label_vertex
+drop cascades to table spatial_api_test._ag_label_edge
+drop cascades to table spatial_api_test."Place"
+drop cascades to table spatial_api_test."ROAD"
+NOTICE:  graph "spatial_api_test" has been dropped
+ drop_graph 
+------------
+ 
+(1 row)
+

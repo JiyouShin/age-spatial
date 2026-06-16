@@ -187,6 +187,7 @@ REGRESS = scan \
           security \
           reserved_keyword_alias \
           agtype_jsonb_cast \
+          age_spatial \
           containment_selectivity
 
 ifneq ($(EXTRA_TESTS),)
@@ -205,7 +206,7 @@ REGRESS += drop
 srcdir=`pwd`
 
 ag_regress_dir = $(srcdir)/regress
-REGRESS_OPTS = --load-extension=age --inputdir=$(ag_regress_dir) --outputdir=$(ag_regress_dir) --temp-instance=$(ag_regress_dir)/instance --port=61958 --encoding=UTF-8 --temp-config $(ag_regress_dir)/age_regression.conf
+REGRESS_OPTS = --load-extension=postgis --load-extension=age_spatial --inputdir=$(ag_regress_dir) --outputdir=$(ag_regress_dir) --temp-instance=$(ag_regress_dir)/instance --port=61958 --encoding=UTF-8 --temp-config $(ag_regress_dir)/age_regression.conf
 
 ag_regress_out = instance/ log/ results/ regression.*
 EXTRA_CLEAN = $(addprefix $(ag_regress_dir)/, $(ag_regress_out)) src/backend/parser/cypher_gram.c src/include/parser/cypher_gram_def.h src/include/parser/cypher_kwlist_d.h $(all_age_sql) $(age_init_sql) $(age_upgrade_test_sql) $(ag_regress_dir)/age_upgrade_cleanup.sh
