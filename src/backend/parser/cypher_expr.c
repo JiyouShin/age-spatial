@@ -119,6 +119,10 @@ static Node *coerce_expr_flexible(ParseState *pstate, Node *expr,
                                   int32 t_typemod, bool error_out);
 static Oid get_entity_record_type(Node *node);
 
+/* downcast for postgis function */
+static char *downcase_function_name(const char *name);
+static FuncCall *copy_funccall_with_name(FuncCall *fn, char *name);
+
 /* transform a cypher expression */
 Node *transform_cypher_expr(cypher_parsestate *cpstate, Node *expr,
                             ParseExprKind expr_kind)
@@ -2035,6 +2039,28 @@ static char *construct_age_function_name(char *funcname)
     return ag_name;
 }
 
+/* downcast for postgis function */
+static char *downcase_function_name(const char *name)
+{
+    int len = strlen(name);
+    char *result = palloc(len + 1);
+    int i;
+
+    for (i = 0; i < len; i++)
+        result[i] = tolower((unsigned char)name[i]);
+
+    result[len] = '\0';
+    return result;
+}
+
+static FuncCall *copy_funccall_with_name(FuncCall *fn, char *name)
+{
+    FuncCall *new_fn = copyObject(fn);
+
+    new_fn->funcname = list_make1(makeString(name));
+    return new_fn;
+}
+
 
 /*
  * Checks if a function exists. If the extension name is given,
@@ -2306,39 +2332,51 @@ static Node *transform_FuncCall(cypher_parsestate *cpstate, FuncCall *fn)
          * If it's not in age, check if it's a potential call to some function
          * in another installed extension.
          */
-        else if(function_exists(name, NULL))
-        {
-            Form_pg_proc procform = get_procform(fn, true);
-            char *extension = get_mapped_extension(procform->oid);
-
-            /*
-             * If the function is from another extension, transform
-             * it if possible and return the function expr.
-             */
-            if (is_extension_external(extension))
-            {
-                retval = transform_external_ext_FuncCall(cpstate, fn, targs,
-                                                         procform, extension);
-                return retval;
-            }
-            /*
-             * Else we have a function that is in the search_path, and not
-             * qualified, but is not in an extension. Pass it through.
-             */
-            else
-            {
-                fname = fn->funcname;
-            }
-        }
-        /* no function found */
         else
         {
-            ereport(ERROR,
-                    (errcode(ERRCODE_UNDEFINED_FUNCTION),
-                    errmsg("function %s does not exist", name),
-                    errhint("If the function is from an external extension, "
-                            "make sure the extension is installed and the "
-                            "function is in the search path.")));
+            char *lookup_name = name;
+            FuncCall *lookup_fn = fn;
+            Form_pg_proc procform = NULL;
+
+            if (!function_exists(lookup_name, NULL))
+            {
+                char *lower_name = downcase_function_name(name);
+
+                if (strcmp(lower_name, name) != 0 &&
+                    function_exists(lower_name, NULL))
+                {
+                    lookup_name = lower_name;
+                    lookup_fn = copy_funccall_with_name(fn, lookup_name);
+                }
+            }
+
+            if (function_exists(lookup_name, NULL))
+            {
+                char *extension;
+
+                procform = get_procform(lookup_fn, true);
+                extension = get_mapped_extension(procform->oid);
+
+                if (is_extension_external(extension))
+                {
+                    retval = transform_external_ext_FuncCall(cpstate, lookup_fn, targs,
+                                                             procform, extension);
+                    return retval;
+                }
+                else
+                {
+                    fname = lookup_fn->funcname;
+                }
+            }
+            else
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_UNDEFINED_FUNCTION),
+                         errmsg("function %s does not exist", name),
+                         errhint("If the function is from an external extension, "
+                                 "make sure the extension is installed and the "
+                                 "function is in the search path.")));
+            }
         }
     }
 
