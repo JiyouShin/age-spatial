@@ -26,6 +26,8 @@
 
 #include "access/heapam.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_type.h"
+#include "executor/spi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -41,6 +43,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 #include "catalog/ag_graph.h"
 #include "catalog/ag_label.h"
@@ -97,6 +100,12 @@
 typedef Query *(*transform_method)(cypher_parsestate *cpstate,
                                    cypher_clause *clause);
 
+typedef struct spatial_projection_context
+{
+    cypher_parsestate *cpstate;
+    Query *query;
+} spatial_projection_context;
+
 /* projection */
 static Query *transform_cypher_return(cypher_parsestate *cpstate,
                                       cypher_clause *clause);
@@ -106,6 +115,42 @@ static List *transform_cypher_order_by(cypher_parsestate *cpstate,
 static TargetEntry *find_target_list_entry(cypher_parsestate *cpstate,
                                            Node *node, List **target_list,
                                            ParseExprKind expr_kind);
+static void add_spatial_projection_targets(cypher_parsestate *cpstate,
+                                           Query *query,
+                                           cypher_return *return_clause);
+static bool collect_spatial_projection_walker(Node *node, void *context);
+static void add_spatial_projection_target(spatial_projection_context *ctx,
+                                          char *varname, char *colname);
+static bool lookup_spatial_projection_metadata(cypher_parsestate *cpstate,
+                                               char *label_name,
+                                               char *colname,
+                                               Oid *relation_oid,
+                                               Oid *type_oid);
+static bool is_postgis_spatial_projection_type(Oid typid);
+static char *make_spatial_projection_name(char *varname, char *colname);
+static bool target_list_has_name(List *target_list, char *resname);
+static RangeTblEntry *find_spatial_projection_rte(Query *query, char *varname,
+                                                  Oid relation_oid,
+                                                  Index *rtindex);
+static char *get_spatial_conflict_label_name(transform_entity *entity);
+static void check_spatial_property_key_conflict(cypher_parsestate *cpstate,
+                                                char *label_name,
+                                                char *property_name,
+                                                int location,
+                                                const char *clause_name);
+static void check_spatial_property_map_conflicts(cypher_parsestate *cpstate,
+                                                 char *label_name,
+                                                 Node *props,
+                                                 int location,
+                                                 const char *clause_name);
+static bool label_has_registered_spatial_columns(cypher_parsestate *cpstate,
+                                                 char *label_name);
+static void check_spatial_property_key_conflict_for_variable(
+    cypher_parsestate *cpstate, char *varname, char *property_name,
+    int location, const char *clause_name);
+static void check_spatial_property_map_conflicts_for_variable(
+    cypher_parsestate *cpstate, char *varname, Node *props, int location,
+    const char *clause_name);
 static Node *transform_cypher_limit(cypher_parsestate *cpstate, Node *node,
                                     ParseExprKind expr_kind,
                                     const char *construct_name);
@@ -356,13 +401,15 @@ static Query *transform_cypher_call_subquery(cypher_parsestate *cpstate,
 #define CYPHER_OPT_RIGHT_ALIAS AGE_DEFAULT_ALIAS_PREFIX"cypher_optional_right"
 #define transform_prev_cypher_clause(cpstate, prev_clause, add_rte_to_query) \
     transform_cypher_clause_as_subquery(cpstate, transform_cypher_clause, \
-                                        prev_clause, NULL, add_rte_to_query)
+                                        prev_clause, NULL, add_rte_to_query, \
+                                        NULL)
 static ParseNamespaceItem
 *transform_cypher_clause_as_subquery(cypher_parsestate *cpstate,
                                      transform_method transform,
                                      cypher_clause *clause,
                                      Alias *alias,
-                                     bool add_rte_to_query);
+                                     bool add_rte_to_query,
+                                     cypher_return *spatial_projection_source);
 static Query *analyze_cypher_clause(transform_method transform,
                                     cypher_clause *clause,
                                     cypher_parsestate *parent_cpstate);
@@ -2265,6 +2312,10 @@ cypher_update_information *transform_cypher_remove_item_list(
         property_name = property_node->sval;
         item->prop_name = property_name;
 
+        check_spatial_property_key_conflict_for_variable(
+            cpstate, variable_name, property_name, set_item->location,
+            UPDATE_CLAUSE_REMOVE);
+
         info->set_items = lappend(info->set_items, item);
     }
 
@@ -2408,6 +2459,19 @@ cypher_update_information *transform_cypher_set_item_list(
 
         variable_name = variable_node->sval;
         item->var_name = variable_name;
+
+        if (is_entire_prop_update)
+        {
+            check_spatial_property_map_conflicts_for_variable(
+                cpstate, variable_name, set_item->expr, set_item->location,
+                UPDATE_CLAUSE_SET);
+        }
+        else
+        {
+            check_spatial_property_key_conflict_for_variable(
+                cpstate, variable_name, property_name, set_item->location,
+                UPDATE_CLAUSE_SET);
+        }
 
         item->entity_position = get_target_entry_resno(query->targetList,
                                                        variable_name);
@@ -2740,7 +2804,8 @@ static Query *transform_cypher_return(cypher_parsestate *cpstate,
 
     if (clause->prev)
     {
-        transform_prev_cypher_clause(cpstate, clause->prev, true);
+        transform_cypher_clause_as_subquery(cpstate, transform_cypher_clause,
+                                            clause->prev, NULL, true, self);
     }
 
     query->targetList = transform_cypher_item_list(cpstate, self->items,
@@ -2877,6 +2942,431 @@ static TargetEntry *find_target_list_entry(cypher_parsestate *cpstate,
     *target_list = lappend(*target_list, te);
 
     return te;
+}
+
+static char *make_spatial_projection_name(char *varname, char *colname)
+{
+    return psprintf("%s%s_%s", AGE_SPATIAL_TARGET_PREFIX, varname, colname);
+}
+
+static bool is_postgis_spatial_projection_type(Oid typid)
+{
+    HeapTuple tuple;
+    Form_pg_type typeform;
+    bool result = false;
+
+    typid = getBaseType(typid);
+
+    tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+    if (!HeapTupleIsValid(tuple))
+        return false;
+
+    typeform = (Form_pg_type) GETSTRUCT(tuple);
+
+    result = pg_strcasecmp(NameStr(typeform->typname), "geometry") == 0 ||
+             pg_strcasecmp(NameStr(typeform->typname), "geography") == 0;
+
+    ReleaseSysCache(tuple);
+
+    return result;
+}
+
+static bool lookup_spatial_projection_metadata(cypher_parsestate *cpstate,
+                                               char *label_name,
+                                               char *colname,
+                                               Oid *relation_oid,
+                                               Oid *type_oid)
+{
+    Oid relid = InvalidOid;
+    Oid typid = InvalidOid;
+    bool found = false;
+
+    *relation_oid = InvalidOid;
+    *type_oid = InvalidOid;
+
+    if (SPI_connect() != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed");
+
+    {
+        Oid argtypes[3] = {TEXTOID, TEXTOID, TEXTOID};
+        Datum values[3];
+
+        values[0] = CStringGetTextDatum(cpstate->graph_name);
+        values[1] = CStringGetTextDatum(label_name);
+        values[2] = CStringGetTextDatum(colname);
+
+        if (SPI_execute_with_args(
+                "SELECT relation_oid "
+                "FROM ag_catalog.ag_spatial_columns "
+                "WHERE graph_name = $1::name "
+                "  AND label_name = $2::name "
+                "  AND column_name = $3::name",
+                3, argtypes, values, NULL, true, 1) != SPI_OK_SELECT)
+        {
+            elog(ERROR, "failed to query ag_spatial_columns");
+        }
+
+        if (SPI_processed == 1)
+        {
+            bool isnull;
+            Datum datum;
+
+            datum = SPI_getbinval(SPI_tuptable->vals[0],
+                                  SPI_tuptable->tupdesc,
+                                  1,
+                                  &isnull);
+            if (!isnull)
+            {
+                AttrNumber attnum;
+
+                relid = DatumGetObjectId(datum);
+                attnum = get_attnum(relid, colname);
+                if (attnum != InvalidAttrNumber)
+                {
+                    typid = get_atttype(relid, attnum);
+                    found = is_postgis_spatial_projection_type(typid);
+                }
+            }
+        }
+    }
+
+    SPI_finish();
+
+    if (found)
+    {
+        *relation_oid = relid;
+        *type_oid = typid;
+    }
+
+    return found;
+}
+
+static char *get_spatial_conflict_label_name(transform_entity *entity)
+{
+    if (entity == NULL)
+        return NULL;
+
+    if (entity->type == ENT_VERTEX && entity->entity.node != NULL)
+        return entity->entity.node->label;
+
+    if (entity->type == ENT_EDGE && entity->entity.rel != NULL)
+        return entity->entity.rel->label;
+
+    return NULL;
+}
+
+static void check_spatial_property_key_conflict(cypher_parsestate *cpstate,
+                                                char *label_name,
+                                                char *property_name,
+                                                int location,
+                                                const char *clause_name)
+{
+    Oid relation_oid;
+    Oid type_oid;
+
+    if (label_name == NULL || label_name[0] == '\0' ||
+        property_name == NULL || property_name[0] == '\0')
+    {
+        return;
+    }
+
+    if (!lookup_spatial_projection_metadata(cpstate, label_name, property_name,
+                                            &relation_oid, &type_oid))
+    {
+        return;
+    }
+
+    ereport(ERROR,
+            (errcode(ERRCODE_DUPLICATE_COLUMN),
+             errmsg("%s property key \"%s\" conflicts with registered spatial column \"%s.%s\"",
+                    clause_name, property_name, label_name, property_name),
+             errhint("Use the spatial physical column API for this value, or choose a different property key."),
+             parser_errposition(&cpstate->pstate, location)));
+}
+
+static void check_spatial_property_map_conflicts(cypher_parsestate *cpstate,
+                                                 char *label_name,
+                                                 Node *props,
+                                                 int location,
+                                                 const char *clause_name)
+{
+    cypher_map *map;
+    ListCell *lc;
+    int errlocation;
+
+    if (props == NULL || !is_ag_node(props, cypher_map))
+        return;
+
+    map = (cypher_map *)props;
+    errlocation = location >= 0 ? location : map->location;
+    lc = list_head(map->keyvals);
+
+    while (lc != NULL)
+    {
+        Node *key = lfirst(lc);
+
+        lc = lnext(map->keyvals, lc);
+        if (lc == NULL)
+            break;
+
+        if (IsA(key, String))
+        {
+            check_spatial_property_key_conflict(cpstate, label_name,
+                                                strVal(key), errlocation,
+                                                clause_name);
+        }
+
+        lc = lnext(map->keyvals, lc);
+    }
+}
+
+static bool label_has_registered_spatial_columns(cypher_parsestate *cpstate,
+                                                 char *label_name)
+{
+    bool found;
+
+    if (label_name == NULL || label_name[0] == '\0')
+        return false;
+
+    if (SPI_connect() != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed");
+
+    {
+        Oid argtypes[2] = {TEXTOID, TEXTOID};
+        Datum values[2];
+
+        values[0] = CStringGetTextDatum(cpstate->graph_name);
+        values[1] = CStringGetTextDatum(label_name);
+
+        if (SPI_execute_with_args(
+                "SELECT 1 "
+                "FROM ag_catalog.ag_spatial_columns "
+                "WHERE graph_name = $1::name "
+                "  AND label_name = $2::name "
+                "LIMIT 1",
+                2, argtypes, values, NULL, true, 1) != SPI_OK_SELECT)
+        {
+            elog(ERROR, "failed to query ag_spatial_columns");
+        }
+
+        found = SPI_processed > 0;
+    }
+
+    SPI_finish();
+
+    return found;
+}
+
+static void check_spatial_property_key_conflict_for_variable(
+    cypher_parsestate *cpstate, char *varname, char *property_name,
+    int location, const char *clause_name)
+{
+    transform_entity *entity;
+    char *label_name;
+
+    entity = find_variable(cpstate, varname);
+    label_name = get_spatial_conflict_label_name(entity);
+
+    check_spatial_property_key_conflict(cpstate, label_name, property_name,
+                                        location, clause_name);
+}
+
+static void check_spatial_property_map_conflicts_for_variable(
+    cypher_parsestate *cpstate, char *varname, Node *props, int location,
+    const char *clause_name)
+{
+    transform_entity *entity;
+    char *label_name;
+
+    entity = find_variable(cpstate, varname);
+    label_name = get_spatial_conflict_label_name(entity);
+
+    if (props != NULL && is_ag_node(props, cypher_map))
+    {
+        check_spatial_property_map_conflicts(cpstate, label_name, props,
+                                             location, clause_name);
+        return;
+    }
+
+    if (label_has_registered_spatial_columns(cpstate, label_name))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("%s cannot assign a dynamic property map to variable \"%s\" because label \"%s\" has registered spatial columns",
+                        clause_name, varname, label_name),
+                 errhint("Use a literal property map whose keys can be checked, or update spatial physical columns through the age_spatial API."),
+                 parser_errposition(&cpstate->pstate, location)));
+    }
+}
+
+static bool target_list_has_name(List *target_list, char *resname)
+{
+    ListCell *lc;
+
+    foreach (lc, target_list)
+    {
+        TargetEntry *te = lfirst(lc);
+
+        if (te->resname != NULL && strcmp(te->resname, resname) == 0)
+            return true;
+    }
+
+    return false;
+}
+
+static RangeTblEntry *find_spatial_projection_rte(Query *query, char *varname,
+                                                  Oid relation_oid,
+                                                  Index *rtindex)
+{
+    ListCell *lc;
+    Index index = 1;
+
+    foreach (lc, query->rtable)
+    {
+        RangeTblEntry *rte = lfirst(lc);
+
+        if (rte->rtekind == RTE_RELATION &&
+            rte->relid == relation_oid &&
+            rte->eref != NULL &&
+            strcmp(rte->eref->aliasname, varname) == 0)
+        {
+            *rtindex = index;
+            return rte;
+        }
+
+        index++;
+    }
+
+    return NULL;
+}
+
+static void add_spatial_projection_target(spatial_projection_context *ctx,
+                                          char *varname, char *colname)
+{
+    cypher_parsestate *cpstate = ctx->cpstate;
+    Query *query = ctx->query;
+    transform_entity *entity;
+    char *label_name = NULL;
+    char *projection_name;
+    Oid relation_oid;
+    Oid type_oid;
+    RangeTblEntry *rte;
+    Index rtindex = 0;
+    AttrNumber attnum;
+    Oid attrtype;
+    int32 attrtypmod;
+    Oid attrcollation;
+    Var *var;
+    TargetEntry *te;
+
+    entity = find_variable(cpstate, varname);
+    if (entity == NULL)
+        return;
+
+    if (entity->type == ENT_VERTEX)
+        label_name = entity->entity.node->label;
+    else if (entity->type == ENT_EDGE)
+        label_name = entity->entity.rel->label;
+    else
+        return;
+
+    if (label_name == NULL)
+        return;
+
+    projection_name = make_spatial_projection_name(varname, colname);
+    if (target_list_has_name(query->targetList, projection_name))
+    {
+        pfree(projection_name);
+        return;
+    }
+
+    if (!lookup_spatial_projection_metadata(cpstate, label_name, colname,
+                                            &relation_oid, &type_oid))
+    {
+        pfree(projection_name);
+        return;
+    }
+
+    rte = find_spatial_projection_rte(query, varname, relation_oid, &rtindex);
+    if (rte == NULL)
+    {
+        pfree(projection_name);
+        return;
+    }
+
+    attnum = get_attnum(relation_oid, colname);
+    if (attnum == InvalidAttrNumber)
+    {
+        pfree(projection_name);
+        return;
+    }
+
+    get_atttypetypmodcoll(relation_oid, attnum, &attrtype, &attrtypmod,
+                          &attrcollation);
+
+    var = makeVar(rtindex, attnum, attrtype, attrtypmod, attrcollation, 0);
+    te = makeTargetEntry((Expr *)var,
+                         (AttrNumber)(list_length(query->targetList) + 1),
+                         projection_name,
+                         false);
+    query->targetList = lappend(query->targetList, te);
+}
+
+static bool collect_spatial_projection_walker(Node *node, void *context)
+{
+    spatial_projection_context *ctx = context;
+
+    if (node == NULL)
+        return false;
+
+    if (IsA(node, A_Indirection))
+    {
+        A_Indirection *a_ind = (A_Indirection *)node;
+
+        if (IsA(a_ind->arg, ColumnRef) &&
+            list_length(((ColumnRef *)a_ind->arg)->fields) == 1 &&
+            list_length(a_ind->indirection) == 1)
+        {
+            ColumnRef *cr = (ColumnRef *)a_ind->arg;
+            Node *field = linitial(cr->fields);
+            Node *indirection = linitial(a_ind->indirection);
+
+            if (IsA(field, String) && IsA(indirection, String))
+            {
+                add_spatial_projection_target(ctx, strVal(field),
+                                              strVal(indirection));
+            }
+        }
+    }
+
+    return cypher_raw_expr_tree_walker(node,
+                                       collect_spatial_projection_walker,
+                                       context);
+}
+
+static void add_spatial_projection_targets(cypher_parsestate *cpstate,
+                                           Query *query,
+                                           cypher_return *return_clause)
+{
+    spatial_projection_context ctx;
+    ListCell *lc;
+
+    ctx.cpstate = cpstate;
+    ctx.query = query;
+
+    foreach (lc, return_clause->items)
+    {
+        ResTarget *item = lfirst(lc);
+
+        collect_spatial_projection_walker(item->val, &ctx);
+    }
+
+    foreach (lc, return_clause->order_by)
+    {
+        SortBy *sort_by = lfirst(lc);
+
+        collect_spatial_projection_walker(sort_by->node, &ctx);
+    }
 }
 
 /* see transformLimitClause() */
@@ -3017,7 +3507,7 @@ static Query *transform_cypher_clause_with_where(cypher_parsestate *cpstate,
         query->commandType = CMD_SELECT;
 
         pnsi = transform_cypher_clause_as_subquery(cpstate, transform, clause,
-                                                   NULL, true);
+                                                   NULL, true, NULL);
         Assert(pnsi != NULL);
         rtindex = list_length(pstate->p_rtable);
         /* rte is the only RangeTblEntry in pstate */
@@ -3142,7 +3632,7 @@ static Node *transform_clause_for_join(cypher_parsestate *cpstate,
 
     *nsitem = transform_cypher_clause_as_subquery(cpstate,
                                                transform_cypher_clause,
-                                               clause, alias, false);
+                                               clause, alias, false, NULL);
     *rte = (*nsitem)->p_rte;
 
     rtr = makeNode(RangeTblRef);
@@ -3592,7 +4082,7 @@ static Query *transform_cypher_sub_pattern(cypher_parsestate *cpstate,
 
     pnsi = transform_cypher_clause_as_subquery(child_parse_state,
                                               transform_cypher_clause, c,
-                                              NULL, true);
+                                              NULL, true, NULL);
 
     qry->targetList = makeTargetListFromPNSItem(p_child_parse_state, pnsi);
 
@@ -3641,7 +4131,7 @@ static Query *transform_cypher_sub_query(cypher_parsestate *cpstate,
     pnsi = transform_cypher_clause_as_subquery(child_parse_state,
                                                transform_cypher_clause,
                                                c,
-                                               NULL, true);
+                                               NULL, true, NULL);
 
     qry->targetList = makeTargetListFromPNSItem(p_child_parse_state, pnsi);
 
@@ -5276,6 +5766,10 @@ static List *transform_match_entities(cypher_parsestate *cpstate, Query *query,
                     prop_expr = make_properties_expr(prop_var);
                 }
 
+                check_spatial_property_map_conflicts(
+                    cpstate, get_spatial_conflict_label_name(entity),
+                    node->props, node->location, "MATCH");
+
                 if (is_ag_node(node->props, cypher_map))
                 {
                     ((cypher_map*)node->props)->keep_null = true;
@@ -5388,6 +5882,10 @@ static List *transform_match_entities(cypher_parsestate *cpstate, Query *query,
                     {
                         prop_expr = make_properties_expr(prop_var);
                     }
+
+                    check_spatial_property_map_conflicts(
+                        cpstate, get_spatial_conflict_label_name(entity),
+                        rel->props, rel->location, "MATCH");
 
                     if (is_ag_node(rel->props, cypher_map))
                     {
@@ -7122,6 +7620,9 @@ static Expr *cypher_create_properties(cypher_parsestate *cpstate,
 
     if (props)
     {
+        check_spatial_property_map_conflicts(cpstate, rel->label_name, props,
+                                             -1, "CREATE");
+
         ((cypher_map*)props)->keep_null = false;
         properties = (Expr *)transform_cypher_expr(cpstate, props,
                                                    EXPR_KIND_INSERT_TARGET);
@@ -7154,7 +7655,8 @@ transform_cypher_clause_as_subquery(cypher_parsestate *cpstate,
                                     transform_method transform,
                                     cypher_clause *clause,
                                     Alias *alias,
-                                    bool add_rte_to_query)
+                                    bool add_rte_to_query,
+                                    cypher_return *spatial_projection_source)
 {
     ParseState *pstate = (ParseState *)cpstate;
     Query *query;
@@ -7194,6 +7696,12 @@ transform_cypher_clause_as_subquery(cypher_parsestate *cpstate,
      */
 
     query = analyze_cypher_clause(transform, clause, cpstate);
+
+    if (spatial_projection_source != NULL)
+    {
+        add_spatial_projection_targets(cpstate, query,
+                                       spatial_projection_source);
+    }
 
     /* set pstate kind back */
     pstate->p_expr_kind = old_expr_kind;

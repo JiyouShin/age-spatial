@@ -80,6 +80,40 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION ag_catalog._assert_no_spatial_property_key_conflict(
+    p_graph_name name,
+    p_label_name name,
+    p_column_name name,
+    p_relation regclass
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_has_conflict boolean;
+BEGIN
+    EXECUTE format(
+        'SELECT EXISTS (
+             SELECT 1
+             FROM %s
+             WHERE ag_catalog.agtype_exists(properties, $1)
+             LIMIT 1
+         )',
+        p_relation
+    )
+    INTO v_has_conflict
+    USING p_column_name::text;
+
+    IF v_has_conflict THEN
+        RAISE EXCEPTION
+            'cannot add spatial column "%.%.%": properties already contain key "%"',
+            p_graph_name, p_label_name, p_column_name, p_column_name
+            USING HINT =
+                'Rename or remove the existing property key before registering a spatial physical column with the same name.';
+    END IF;
+END;
+$$;
+
 CREATE FUNCTION ag_catalog._add_spatial_column(
     p_graph_name name,
     p_label_name name,
@@ -132,6 +166,13 @@ BEGIN
         RAISE EXCEPTION 'spatial column "%.%.%" is already registered',
             p_graph_name, p_label_name, p_column_name;
     END IF;
+
+    PERFORM ag_catalog._assert_no_spatial_property_key_conflict(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        v_relation
+    );
 
     IF p_spatial_type = 'geometry' THEN
         EXECUTE format(
@@ -373,6 +414,76 @@ BEGIN
         p_entity_id,
         p_value
     );
+END;
+$$;
+
+CREATE FUNCTION ag_catalog.get_geometry_value(
+    p_graph_name text,
+    p_label_name text,
+    p_column_name text,
+    p_entity_id ag_catalog.graphid
+)
+RETURNS @extschema:postgis@.geometry
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_relation regclass;
+    v_value @extschema:postgis@.geometry;
+BEGIN
+    SELECT relation_oid::regclass
+    INTO v_relation
+    FROM ag_catalog.ag_spatial_columns
+    WHERE graph_name = p_graph_name::name
+      AND label_name = p_label_name::name
+      AND column_name = p_column_name::name
+      AND spatial_type = 'geometry';
+
+    IF v_relation IS NULL THEN
+        RAISE EXCEPTION 'registered geometry column "%.%.%" not found',
+            p_graph_name, p_label_name, p_column_name;
+    END IF;
+
+    EXECUTE format('SELECT %I FROM %s WHERE id = $1', p_column_name, v_relation)
+    INTO v_value
+    USING p_entity_id;
+
+    RETURN v_value;
+END;
+$$;
+
+CREATE FUNCTION ag_catalog.get_geography_value(
+    p_graph_name text,
+    p_label_name text,
+    p_column_name text,
+    p_entity_id ag_catalog.graphid
+)
+RETURNS @extschema:postgis@.geography
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_relation regclass;
+    v_value @extschema:postgis@.geography;
+BEGIN
+    SELECT relation_oid::regclass
+    INTO v_relation
+    FROM ag_catalog.ag_spatial_columns
+    WHERE graph_name = p_graph_name::name
+      AND label_name = p_label_name::name
+      AND column_name = p_column_name::name
+      AND spatial_type = 'geography';
+
+    IF v_relation IS NULL THEN
+        RAISE EXCEPTION 'registered geography column "%.%.%" not found',
+            p_graph_name, p_label_name, p_column_name;
+    END IF;
+
+    EXECUTE format('SELECT %I FROM %s WHERE id = $1', p_column_name, v_relation)
+    INTO v_value
+    USING p_entity_id;
+
+    RETURN v_value;
 END;
 $$;
 

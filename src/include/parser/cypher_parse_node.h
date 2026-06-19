@@ -30,6 +30,17 @@
 #define AGE_DEFAULT_PREFIX "_age_default_"
 #define AGE_DEFAULT_ALIAS_PREFIX AGE_DEFAULT_PREFIX"alias_"
 #define AGE_DEFAULT_VARNAME_PREFIX AGE_DEFAULT_PREFIX"varname_"
+#define AGE_SPATIAL_TARGET_PREFIX AGE_DEFAULT_ALIAS_PREFIX"spatial_"
+
+typedef struct spatial_column_cache_entry
+{
+    Oid graph_oid;
+    char *label_name;
+    char *column_name;
+    bool found;
+    Oid relation_oid;
+    Oid type_oid;
+} spatial_column_cache_entry;
 
 typedef struct cypher_parsestate
 {
@@ -40,6 +51,7 @@ typedef struct cypher_parsestate
     int default_alias_num;
     List *entities;
     List *property_constraint_quals;
+    List *spatial_column_cache;
     bool subquery_where_flag; /* flag for knowing we are in a subquery where */
     /*
      * To flag when an aggregate has been found in an expression during an

@@ -32,6 +32,13 @@ NOTICE:  VLabel "Place" has been created
  
 (1 row)
 
+SELECT create_vlabel('spatial_api_test', 'ConflictPlace');
+NOTICE:  VLabel "ConflictPlace" has been created
+ create_vlabel 
+---------------
+ 
+(1 row)
+
 SELECT create_elabel('spatial_api_test', 'ROAD');
 NOTICE:  ELabel "ROAD" has been created
  create_elabel 
@@ -39,6 +46,38 @@ NOTICE:  ELabel "ROAD" has been created
  
 (1 row)
 
+-- A spatial physical column must not reuse an existing top-level property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:ConflictPlace {geom: 'legacy'})
+    RETURN count(*)
+$$) AS (created agtype);
+ created 
+---------
+ 1
+(1 row)
+
+SELECT add_geometry_column('spatial_api_test', 'ConflictPlace', 'geom', 'Point', 4326, true);
+ERROR:  cannot add spatial column "spatial_api_test.ConflictPlace.geom": properties already contain key "geom"
+HINT:  Rename or remove the existing property key before registering a spatial physical column with the same name.
+CONTEXT:  PL/pgSQL function _assert_no_spatial_property_key_conflict(name,name,name,regclass) line 18 at RAISE
+SQL statement "SELECT ag_catalog._assert_no_spatial_property_key_conflict(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        v_relation
+    )"
+PL/pgSQL function _add_spatial_column(name,name,name,text,text,integer,boolean) line 43 at PERFORM
+SQL statement "SELECT ag_catalog._add_spatial_column(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        'geometry',
+        p_geometry_type,
+        p_srid,
+        p_create_index
+    )"
+PL/pgSQL function add_geometry_column(name,name,name,text,integer,boolean) line 3 at PERFORM
 -- Register spatial columns on both vertex and edge label tables.
 SELECT add_geometry_column('spatial_api_test', 'Place', 'geom', 'Point', 4326, true);
  add_geometry_column 
@@ -219,6 +258,97 @@ FROM spatial_api_test."ROAD";
           1 |               1 |               1 | LINESTRING(127 37,127.1 37.1)
 (1 row)
 
+-- Cypher should be able to project registered spatial physical columns.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    RETURN p.name, st_astext(p.geom)
+    ORDER BY p.name
+$$) AS (name agtype, geom_wkt agtype);
+ name |      geom_wkt       
+------+---------------------
+ "A"  | "POINT(127 37)"
+ "B"  | "POINT(127.1 37.1)"
+(2 rows)
+
+-- Registered spatial column names are reserved from properties.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:Place {geom: 'shadow'})
+    RETURN count(*)
+$$) AS (created agtype);
+ERROR:  CREATE property key "geom" conflicts with registered spatial column "Place.geom"
+LINE 2: FROM cypher('spatial_api_test', $$
+                                          ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:Place {name: 'C'})-[:ROAD {geom: 'shadow'}]->(:Place {name: 'D'})
+    RETURN count(*)
+$$) AS (created agtype);
+ERROR:  CREATE property key "geom" conflicts with registered spatial column "ROAD.geom"
+LINE 2: FROM cypher('spatial_api_test', $$
+                                          ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place {geom: 'shadow'})
+    RETURN count(p)
+$$) AS (matched agtype);
+ERROR:  MATCH property key "geom" conflicts with registered spatial column "Place.geom"
+LINE 3:     MATCH (p:Place {geom: 'shadow'})
+                   ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p.geom = 'shadow'
+    RETURN count(p)
+$$) AS (updated agtype);
+ERROR:  SET property key "geom" conflicts with registered spatial column "Place.geom"
+LINE 4:     SET p.geom = 'shadow'
+                ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (:Place)-[r:ROAD]->(:Place)
+    SET r.geom = 'shadow'
+    RETURN count(r)
+$$) AS (updated agtype);
+ERROR:  SET property key "geom" conflicts with registered spatial column "ROAD.geom"
+LINE 4:     SET r.geom = 'shadow'
+                ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p = {geom: 'shadow'}
+    RETURN count(p)
+$$) AS (updated agtype);
+ERROR:  SET property key "geom" conflicts with registered spatial column "Place.geom"
+LINE 4:     SET p = {geom: 'shadow'}
+                ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p = properties(p)
+    RETURN count(p)
+$$) AS (updated agtype);
+ERROR:  SET cannot assign a dynamic property map to variable "p" because label "Place" has registered spatial columns
+LINE 4:     SET p = properties(p)
+                ^
+HINT:  Use a literal property map whose keys can be checked, or update spatial physical columns through the age_spatial API.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    REMOVE p.geom
+    RETURN count(p)
+$$) AS (updated agtype);
+ERROR:  REMOVE property key "geom" conflicts with registered spatial column "Place.geom"
+LINE 2: FROM cypher('spatial_api_test', $$
+                                          ^
+HINT:  Use the spatial physical column API for this value, or choose a different property key.
 -- Re-setting a spatial value is the update path for spatial columns.
 SELECT set_geometry_value(
     'spatial_api_test',
@@ -355,10 +485,11 @@ ORDER BY table_name;
 
 DROP TABLE spatial_api_ids;
 SELECT drop_graph('spatial_api_test', true);
-NOTICE:  drop cascades to 4 other objects
+NOTICE:  drop cascades to 5 other objects
 DETAIL:  drop cascades to table spatial_api_test._ag_label_vertex
 drop cascades to table spatial_api_test._ag_label_edge
 drop cascades to table spatial_api_test."Place"
+drop cascades to table spatial_api_test."ConflictPlace"
 drop cascades to table spatial_api_test."ROAD"
 NOTICE:  graph "spatial_api_test" has been dropped
  drop_graph 

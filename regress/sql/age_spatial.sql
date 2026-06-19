@@ -22,7 +22,17 @@ SET search_path TO ag_catalog, public;
 
 SELECT create_graph('spatial_api_test');
 SELECT create_vlabel('spatial_api_test', 'Place');
+SELECT create_vlabel('spatial_api_test', 'ConflictPlace');
 SELECT create_elabel('spatial_api_test', 'ROAD');
+
+-- A spatial physical column must not reuse an existing top-level property key.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:ConflictPlace {geom: 'legacy'})
+    RETURN count(*)
+$$) AS (created agtype);
+
+SELECT add_geometry_column('spatial_api_test', 'ConflictPlace', 'geom', 'Point', 4326, true);
 
 -- Register spatial columns on both vertex and edge label tables.
 SELECT add_geometry_column('spatial_api_test', 'Place', 'geom', 'Point', 4326, true);
@@ -141,6 +151,68 @@ SELECT count(*) AS road_count,
        count(geog) AS road_geog_count,
        string_agg(public.ST_AsText(geom), ',' ORDER BY id) AS road_geom_wkt
 FROM spatial_api_test."ROAD";
+
+-- Cypher should be able to project registered spatial physical columns.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    RETURN p.name, st_astext(p.geom)
+    ORDER BY p.name
+$$) AS (name agtype, geom_wkt agtype);
+
+-- Registered spatial column names are reserved from properties.
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:Place {geom: 'shadow'})
+    RETURN count(*)
+$$) AS (created agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    CREATE (:Place {name: 'C'})-[:ROAD {geom: 'shadow'}]->(:Place {name: 'D'})
+    RETURN count(*)
+$$) AS (created agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place {geom: 'shadow'})
+    RETURN count(p)
+$$) AS (matched agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p.geom = 'shadow'
+    RETURN count(p)
+$$) AS (updated agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (:Place)-[r:ROAD]->(:Place)
+    SET r.geom = 'shadow'
+    RETURN count(r)
+$$) AS (updated agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p = {geom: 'shadow'}
+    RETURN count(p)
+$$) AS (updated agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    SET p = properties(p)
+    RETURN count(p)
+$$) AS (updated agtype);
+
+SELECT *
+FROM cypher('spatial_api_test', $$
+    MATCH (p:Place)
+    REMOVE p.geom
+    RETURN count(p)
+$$) AS (updated agtype);
 
 -- Re-setting a spatial value is the update path for spatial columns.
 SELECT set_geometry_value(

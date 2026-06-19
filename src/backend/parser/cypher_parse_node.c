@@ -60,6 +60,7 @@ cypher_parsestate *make_cypher_parsestate(cypher_parsestate *parent_cpstate)
         cpstate->graph_oid = parent_cpstate->graph_oid;
         cpstate->params = parent_cpstate->params;
         cpstate->subquery_where_flag = parent_cpstate->subquery_where_flag;
+        cpstate->spatial_column_cache = parent_cpstate->spatial_column_cache;
     }
 
     return cpstate;

@@ -46,6 +46,9 @@
 #include "parser/cypher_transform_entity.h"
 #include "utils/ag_func.h"
 #include "utils/agtype.h"
+#include "executor/spi.h"
+#include "catalog/pg_type.h"
+#include "utils/syscache.h"
 
 /* names of typecast functions */
 #define FUNC_AGTYPE_TYPECAST_EDGE "agtype_typecast_edge"
@@ -119,9 +122,30 @@ static Node *coerce_expr_flexible(ParseState *pstate, Node *expr,
                                   int32 t_typemod, bool error_out);
 static Oid get_entity_record_type(Node *node);
 
-/* downcast for postgis function */
+/* downcase function for postgis function */
 static char *downcase_function_name(const char *name);
 static FuncCall *copy_funccall_with_name(FuncCall *fn, char *name);
+
+/* reference for spatial physical column */
+static Node *transform_spatial_physical_column_ref(cypher_parsestate *cpstate,
+                                                   ColumnRef *cr,
+                                                   A_Indirection *a_ind);
+static spatial_column_cache_entry *lookup_spatial_column_cache(
+    cypher_parsestate *cpstate, char *label_name, char *column_name);
+static bool is_postgis_spatial_type(Oid typid);
+static char *get_postgis_spatial_type_name(Oid typid);
+static Node *make_spatial_value_getter_expr(cypher_parsestate *cpstate,
+                                            char *varname,
+                                            char *label_name,
+                                            char *colname,
+                                            spatial_column_cache_entry *entry,
+                                            int location);
+static char *make_spatial_projection_name(char *varname, char *colname);
+static Node *find_spatial_projection_target(cypher_parsestate *cpstate,
+                                            char *varname,
+                                            char *colname,
+                                            int location);
+
 
 /* transform a cypher expression */
 Node *transform_cypher_expr(cypher_parsestate *cpstate, Node *expr,
@@ -1374,6 +1398,293 @@ static ArrayExpr *make_agtype_array_expr(List *args)
     return newa;
 }
 
+
+/* reference for spatial physical column */
+static cypher_parsestate *get_root_cpstate(cypher_parsestate *cpstate)
+{
+    while (cpstate->pstate.parentParseState != NULL)
+        cpstate = (cypher_parsestate *)cpstate->pstate.parentParseState;
+
+    return cpstate;
+}
+
+static char *get_postgis_spatial_type_name(Oid typid)
+{
+    HeapTuple tuple;
+    Form_pg_type typeform;
+    char *type_name = NULL;
+
+    typid = getBaseType(typid);
+
+    tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+    if (!HeapTupleIsValid(tuple))
+        return NULL;
+
+    typeform = (Form_pg_type) GETSTRUCT(tuple);
+
+    if (pg_strcasecmp(NameStr(typeform->typname), "geometry") == 0)
+        type_name = pstrdup("geometry");
+    else if (pg_strcasecmp(NameStr(typeform->typname), "geography") == 0)
+        type_name = pstrdup("geography");
+
+    ReleaseSysCache(tuple);
+
+    return type_name;
+}
+
+static bool is_postgis_spatial_type(Oid typid)
+{
+    char *type_name = get_postgis_spatial_type_name(typid);
+
+    if (type_name == NULL)
+        return false;
+
+    pfree(type_name);
+    return true;
+}
+
+static char *make_spatial_projection_name(char *varname, char *colname)
+{
+    return psprintf("%s%s_%s", AGE_SPATIAL_TARGET_PREFIX, varname, colname);
+}
+
+static Node *find_spatial_projection_target(cypher_parsestate *cpstate,
+                                            char *varname,
+                                            char *colname,
+                                            int location)
+{
+    ParseState *pstate = &cpstate->pstate;
+    char *projection_name;
+    Node *projection;
+
+    projection_name = make_spatial_projection_name(varname, colname);
+    projection = colNameToVar(pstate, projection_name, false, location);
+    pfree(projection_name);
+
+    if (projection == NULL || !is_postgis_spatial_type(exprType(projection)))
+        return NULL;
+
+    return projection;
+}
+
+static Node *make_spatial_value_getter_expr(cypher_parsestate *cpstate,
+                                            char *varname,
+                                            char *label_name,
+                                            char *colname,
+                                            spatial_column_cache_entry *entry,
+                                            int location)
+{
+    ParseState *pstate = &cpstate->pstate;
+    Node *entity_node;
+    Node *id_node;
+    Node *graph_name;
+    Node *label_name_const;
+    Node *column_name_const;
+    char *spatial_type;
+    char *func_name;
+    Oid func_oid;
+    List *args;
+
+    entity_node = colNameToVar(pstate, varname, false, location);
+    if (entity_node == NULL || !is_vertex_or_edge(entity_node))
+        return NULL;
+
+    id_node = extract_field_from_record(entity_node, "id");
+
+    spatial_type = get_postgis_spatial_type_name(entry->type_oid);
+    if (spatial_type == NULL)
+        return NULL;
+
+    if (strcmp(spatial_type, "geometry") == 0)
+        func_name = "get_geometry_value";
+    else
+        func_name = "get_geography_value";
+
+    graph_name = (Node *)makeConst(TEXTOID, -1, InvalidOid, -1,
+                                   CStringGetTextDatum(cpstate->graph_name),
+                                   false, false);
+    label_name_const = (Node *)makeConst(TEXTOID, -1, InvalidOid, -1,
+                                         CStringGetTextDatum(label_name),
+                                         false, false);
+    column_name_const = (Node *)makeConst(TEXTOID, -1, InvalidOid, -1,
+                                          CStringGetTextDatum(colname),
+                                          false, false);
+
+    func_oid = get_ag_func_oid(func_name, 4, TEXTOID, TEXTOID, TEXTOID,
+                               GRAPHIDOID);
+
+    args = list_make4(graph_name, label_name_const, column_name_const, id_node);
+
+    pfree(spatial_type);
+
+    return (Node *)makeFuncExpr(func_oid, entry->type_oid, args, InvalidOid,
+                                InvalidOid, COERCE_EXPLICIT_CALL);
+}
+
+/* look up metadata and cache function for physical geometry column reference */
+static spatial_column_cache_entry *lookup_spatial_column_cache(
+    cypher_parsestate *cpstate, char *label_name, char *column_name)
+{
+    cypher_parsestate *root = get_root_cpstate(cpstate);
+    ListCell *lc;
+    spatial_column_cache_entry *entry;
+    Oid relid = InvalidOid;
+    Oid type_oid = InvalidOid;
+    bool found = false;
+
+    foreach (lc, root->spatial_column_cache)
+    {
+        entry = lfirst(lc);
+
+        if (entry->graph_oid == cpstate->graph_oid &&
+            strcmp(entry->label_name, label_name) == 0 &&
+            strcmp(entry->column_name, column_name) == 0)
+        {
+            return entry;
+        }
+    }
+
+    entry = palloc0(sizeof(spatial_column_cache_entry));
+    entry->graph_oid = cpstate->graph_oid;
+    entry->label_name = pstrdup(label_name);
+    entry->column_name = pstrdup(column_name);
+
+    if (SPI_connect() != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed");
+
+    {
+        Oid argtypes[3] = {TEXTOID, TEXTOID, TEXTOID};
+        Datum values[3];
+
+        values[0] = CStringGetTextDatum(cpstate->graph_name);
+        values[1] = CStringGetTextDatum(label_name);
+        values[2] = CStringGetTextDatum(column_name);
+
+        if (SPI_execute_with_args(
+                "SELECT relation_oid "
+                "FROM ag_catalog.ag_spatial_columns "
+                "WHERE graph_name = $1::name "
+                "  AND label_name = $2::name "
+                "  AND column_name = $3::name",
+                3, argtypes, values, NULL, true, 1) != SPI_OK_SELECT)
+        {
+            elog(ERROR, "failed to query ag_spatial_columns");
+        }
+
+        if (SPI_processed == 1)
+        {
+            bool isnull;
+            Datum datum;
+
+            datum = SPI_getbinval(SPI_tuptable->vals[0],
+                                  SPI_tuptable->tupdesc,
+                                  1,
+                                  &isnull);
+
+            if (!isnull)
+            {
+                AttrNumber attnum;
+
+                relid = DatumGetObjectId(datum);
+                attnum = get_attnum(relid, column_name);
+
+                if (attnum != InvalidAttrNumber)
+                {
+                    type_oid = get_atttype(relid, attnum);
+                    found = is_postgis_spatial_type(type_oid);
+                }
+            }
+        }
+    }
+
+    SPI_finish();
+
+    entry->found = found;
+    entry->relation_oid = relid;
+    entry->type_oid = type_oid;
+
+    root->spatial_column_cache = lappend(root->spatial_column_cache, entry);
+
+    return entry;
+}
+
+static Node *transform_spatial_physical_column_ref(cypher_parsestate *cpstate,
+                                                   ColumnRef *cr,
+                                                   A_Indirection *a_ind)
+{
+    ParseState *pstate = &cpstate->pstate;
+    Node *field1;
+    Node *indirection;
+    char *varname;
+    char *colname;
+    char *label_name = NULL;
+    transform_entity *entity;
+    spatial_column_cache_entry *entry;
+    ParseNamespaceItem *pnsi;
+    Node *column;
+    int levels_up = 0;
+
+    if (list_length(cr->fields) != 1 ||
+        list_length(a_ind->indirection) != 1)
+        return NULL;
+
+    field1 = linitial(cr->fields);
+    indirection = linitial(a_ind->indirection);
+
+    if (!IsA(field1, String) || !IsA(indirection, String))
+        return NULL;
+
+    varname = strVal(field1);
+    colname = strVal(indirection);
+
+    entity = find_variable(cpstate, varname);
+    if (entity == NULL)
+        return NULL;
+
+    if (entity->type == ENT_VERTEX)
+        label_name = entity->entity.node->label;
+    else if (entity->type == ENT_EDGE)
+        label_name = entity->entity.rel->label;
+    else
+        return NULL;
+
+    if (label_name == NULL)
+        return NULL;
+
+    entry = lookup_spatial_column_cache(cpstate, label_name, colname);
+    if (!entry->found)
+        return NULL;
+
+    pnsi = refnameNamespaceItem(pstate, NULL, varname, cr->location,
+                                &levels_up);
+    if (pnsi == NULL)
+    {
+        Node *projection;
+
+        projection = find_spatial_projection_target(cpstate, varname, colname,
+                                                    cr->location);
+        if (projection != NULL)
+            return projection;
+
+        return make_spatial_value_getter_expr(cpstate, varname, label_name,
+                                              colname, entry, cr->location);
+    }
+
+    column = scanNSItemForColumn(pstate, pnsi, levels_up, colname,
+                                 cr->location);
+
+    if (column == NULL || !is_postgis_spatial_type(exprType(column)))
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_UNDEFINED_COLUMN),
+                 errmsg("registered spatial column %s.%s is missing or not geometry/geography",
+                        label_name, colname),
+                 parser_errposition(pstate, cr->location)));
+    }
+
+    return column;
+}
+
 /*
  * Transform a ColumnRef for indirection. Try to find the rte that the ColumnRef
  * references and pass the properties of that rte as what the ColumnRef is
@@ -1449,6 +1760,11 @@ static Node *transform_A_Indirection(cypher_parsestate *cpstate,
     if (IsA(a_ind->arg, ColumnRef))
     {
         ColumnRef *cr = (ColumnRef *)a_ind->arg;
+        Node *spatial_column;
+
+        spatial_column = transform_spatial_physical_column_ref(cpstate, cr, a_ind);
+        if (spatial_column != NULL)
+            return spatial_column;
 
         ind_arg_expr = transform_column_ref_for_indirection(cpstate, cr);
     }
