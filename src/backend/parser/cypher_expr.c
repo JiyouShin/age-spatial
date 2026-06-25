@@ -24,6 +24,7 @@
 
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "catalog/pg_proc.h"
 #include "catalog/dependency.h"
 #include "commands/extension.h"
@@ -111,7 +112,9 @@ static List *cast_agtype_args_to_target_type(cypher_parsestate *cpstate,
                                              Oid *target_types);
 static Node *wrap_text_output_to_agtype(cypher_parsestate *cpstate,
                                         FuncExpr *fexpr);
-static Form_pg_proc get_procform(FuncCall *fn, bool err_not_found);
+static Form_pg_proc get_procform(FuncCall *fn, List *targs,
+                                 bool err_not_found);
+static int score_procform_arg_match(Form_pg_proc procform, List *targs);
 static char *get_mapped_extension(Oid func_oid);
 static bool is_age_extension(char *extension);
 static bool is_extension_external(char *extension);
@@ -524,6 +527,36 @@ static Node *transform_ColumnRef(cypher_parsestate *cpstate, ColumnRef *cref)
                              errmsg("could not find column %s in rel %s of rte",
                                     colname, relname),
                              parser_errposition(pstate, cref->location)));
+                }
+                /*
+                 * If this is a registered AGE spatial physical column, keep it as the
+                 * native PostGIS geometry/geography Var. Do not coerce it to agtype.
+                 */
+                if (is_postgis_spatial_type(exprType(node)))
+                {
+                    transform_entity *entity = find_variable(cpstate, relname);
+                    char *label_name = NULL;
+
+                    if (entity != NULL && entity->type == ENT_VERTEX)
+                        label_name = entity->entity.node->label;
+                    else if (entity != NULL && entity->type == ENT_EDGE)
+                        label_name = entity->entity.rel->label;
+
+                    if (label_name != NULL)
+                    {
+                        spatial_column_cache_entry *entry;
+
+                        entry = lookup_spatial_column_cache(cpstate, label_name, colname);
+
+                        if (entry->found)
+                        {
+                            /*
+                             * This is the important part:
+                             * return geometry/geography as-is.
+                             */
+                            break;
+                        }
+                    }
                 }
 
                 /* coerce it to AGTYPE if possible */
@@ -2181,6 +2214,15 @@ static List *cast_agtype_args_to_target_type(cypher_parsestate *cpstate,
         Oid source_oid = exprType(expr);
         Oid target_oid = target_types[foreach_current_index(lc)];
 
+        if (source_oid == target_oid ||
+            getBaseType(source_oid) == getBaseType(target_oid) ||
+            (is_postgis_spatial_type(source_oid) &&
+             is_postgis_spatial_type(target_oid)))
+        {
+            lfirst(lc) = expr;
+            continue;
+        }
+
         /* errors out if cast not possible */
         expr = coerce_expr_flexible(&cpstate->pstate, expr, source_oid,
                                      target_oid, -1, true);
@@ -2225,21 +2267,92 @@ static Node *wrap_text_output_to_agtype(cypher_parsestate *cpstate,
     return retval;
 }
 
+static int score_procform_arg_match(Form_pg_proc procform, List *targs)
+{
+    Oid *target_types;
+    ListCell *lc;
+    int score = 0;
+
+    if (list_length(targs) != procform->pronargs)
+        return -1;
+
+    target_types = procform->proargtypes.values;
+
+    foreach (lc, targs)
+    {
+        Node *expr = lfirst(lc);
+        Oid source_oid = exprType(expr);
+        Oid target_oid = target_types[foreach_current_index(lc)];
+        Oid source_base = getBaseType(source_oid);
+        Oid target_base = getBaseType(target_oid);
+        Oid source_arg[1];
+        Oid target_arg[1];
+
+        if (source_oid == target_oid || source_base == target_base)
+            continue;
+
+        if (is_postgis_spatial_type(source_oid) &&
+            is_postgis_spatial_type(target_oid))
+        {
+            score += 1;
+            continue;
+        }
+
+        source_arg[0] = source_oid;
+        target_arg[0] = target_oid;
+
+        if (can_coerce_type(1, source_arg, target_arg, COERCION_IMPLICIT))
+        {
+            score += 10;
+            continue;
+        }
+
+        if (can_coerce_type(1, source_arg, target_arg, COERCION_EXPLICIT))
+        {
+            score += 20;
+            continue;
+        }
+
+        if (source_oid == AGTYPEOID || target_oid == AGTYPEOID)
+        {
+            Oid text_oid = TEXTOID;
+            Oid text_arg[1];
+
+            text_arg[0] = text_oid;
+
+            if (can_coerce_type(1, source_arg, text_arg, COERCION_EXPLICIT) &&
+                can_coerce_type(1, text_arg, target_arg, COERCION_EXPLICIT))
+            {
+                score += 50;
+                continue;
+            }
+        }
+
+        return -1;
+    }
+
+    return score;
+}
+
 /* 
  * Returns Form_pg_proc struct for given function, if the function
  * is not in search path, it is not considered.
  */
-static Form_pg_proc get_procform(FuncCall *fn, bool err_not_found)
+static Form_pg_proc get_procform(FuncCall *fn, List *targs,
+                                 bool err_not_found)
 {
     CatCList *catlist = NULL;
     Form_pg_proc procform = NULL;
+    Form_pg_proc result_procform = NULL;
+    Oid fallback_proc_oid = InvalidOid;
+    Oid best_proc_oid = InvalidOid;
+    Oid selected_proc_oid = InvalidOid;
+    int best_score = -1;
     int nargs;
     int i = 0;
     List *asp;
-    bool found = false;
     char *funcname = (((String*)linitial(fn->funcname))->sval);
 
-    /* get a list of matching functions */
     catlist = SearchSysCacheList1(PROCNAMEARGSNSP, CStringGetDatum(funcname));
 
     if (catlist->n_members == 0)
@@ -2251,46 +2364,83 @@ static Form_pg_proc get_procform(FuncCall *fn, bool err_not_found)
     asp = fetch_search_path(false);
     nargs = list_length(fn->args);
 
-    /* iterate through them and verify that they are in the search path */
     for (i = 0; i < catlist->n_members; i++)
     {
         ListCell *nsp;
         HeapTuple proctup = &catlist->members[i]->tuple;
+        bool in_search_path = false;
+        int score;
+
         procform = (Form_pg_proc) GETSTRUCT(proctup);
 
-        /*
-         * Check if the function name, number of arguments, and
-         * variadic match before checking if it is in the search
-         * path.
-         */
-        if (pg_strcasecmp(funcname, procform->proname.data) == 0 &&
-            nargs == procform->pronargs &&
-            fn->func_variadic == procform->provariadic)
+        if (pg_strcasecmp(funcname, procform->proname.data) != 0 ||
+            nargs != procform->pronargs ||
+            fn->func_variadic != procform->provariadic)
         {
-            foreach(nsp, asp)
-            {
-                Oid oid = lfirst_oid(nsp);
+            procform = NULL;
+            continue;
+        }
 
-                if (procform->pronamespace == oid &&
-                    isTempNamespace(procform->pronamespace) == false)
-                {
-                    found = true;
-                    break;
-                }
+        foreach(nsp, asp)
+        {
+            Oid oid = lfirst_oid(nsp);
+
+            if (procform->pronamespace == oid &&
+                isTempNamespace(procform->pronamespace) == false)
+            {
+                in_search_path = true;
+                break;
             }
         }
 
-        if (found)
+        if (!in_search_path)
         {
-            break;
+            procform = NULL;
+            continue;
         }
 
-        /* reset procform */
+        if (!OidIsValid(fallback_proc_oid))
+            fallback_proc_oid = procform->oid;
+
+        score = score_procform_arg_match(procform, targs);
+
+        if (score >= 0 &&
+            (!OidIsValid(best_proc_oid) || score < best_score))
+        {
+            best_proc_oid = procform->oid;
+            best_score = score;
+
+            if (score == 0)
+                break;
+        }
+
         procform = NULL;
     }
 
-    /* Error out if function not found */
-    if (err_not_found && (procform == NULL))
+    selected_proc_oid = OidIsValid(best_proc_oid) ? best_proc_oid : fallback_proc_oid;
+
+    if (OidIsValid(selected_proc_oid))
+    {
+        HeapTuple proctup;
+
+        /*
+         * pg_proc.proargtypes is a variable-length oidvector. Copying only
+         * sizeof(FormData_pg_proc) can truncate the argument array and produce
+         * bogus type OIDs later when resolving external function arguments.
+         */
+        proctup = SearchSysCacheCopy1(PROCOID,
+                                      ObjectIdGetDatum(selected_proc_oid));
+        if (!HeapTupleIsValid(proctup))
+        {
+            ereport(ERROR,
+                    (errcode(ERRCODE_UNDEFINED_FUNCTION),
+                     errmsg("function %s does not exist", funcname)));
+        }
+
+        result_procform = (Form_pg_proc) GETSTRUCT(proctup);
+    }
+
+    if (err_not_found && result_procform == NULL)
     {
         ereport(ERROR,
                 (errcode(ERRCODE_UNDEFINED_FUNCTION),
@@ -2300,11 +2450,10 @@ static Form_pg_proc get_procform(FuncCall *fn, bool err_not_found)
                          "function is in the search path.")));
     }
 
-    /* we need to release the cache list */
     ReleaseSysCacheList(catlist);
     pfree_if_not_null(asp);
 
-    return procform;
+    return result_procform;
 }
 
 static char *get_mapped_extension(Oid func_oid)
@@ -2670,7 +2819,7 @@ static Node *transform_FuncCall(cypher_parsestate *cpstate, FuncCall *fn)
             {
                 char *extension;
 
-                procform = get_procform(lookup_fn, true);
+                procform = get_procform(lookup_fn, targs, true);
                 extension = get_mapped_extension(procform->oid);
 
                 if (is_extension_external(extension))
