@@ -31,11 +31,13 @@
 #include "parser/parse_relation.h"
 #include "utils/acl.h"
 #include "utils/json.h"
+#include "utils/jsonb.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 
 #include "utils/load/ag_load_edges.h"
 #include "utils/load/ag_load_labels.h"
+#include "utils/load/ag_load_spatial.h"
 #include "utils/load/age_load.h"
 
 static agtype_value *csv_value_to_agtype_value(char *csv_val);
@@ -46,6 +48,12 @@ static char *build_safe_filename(char *name);
 static void check_file_read_permission(void);
 static void check_table_permissions(Oid relid);
 static void check_rls_for_load(Oid relid);
+
+PG_FUNCTION_INFO_V1(load_labels_with_spatial_from_file);
+Datum load_labels_with_spatial_from_file(PG_FUNCTION_ARGS);
+
+PG_FUNCTION_INFO_V1(load_edges_with_spatial_from_file);
+Datum load_edges_with_spatial_from_file(PG_FUNCTION_ARGS);
 
 #define AGE_BASE_CSV_DIRECTORY "/tmp/age/"
 #define AGE_CSV_FILE_EXTENSION ".csv"
@@ -338,6 +346,85 @@ agtype *create_agtype_from_list(char **header, char **fields, size_t fields_len,
     return out;
 }
 
+agtype *create_agtype_from_list_skip(char **header, char **fields,
+                                     size_t fields_len, int64 vertex_id,
+                                     bool load_as_agtype, bool *skip)
+{
+    agtype* out;
+    agtype_value* key_agtype;
+    agtype_value* value_agtype;
+    agtype_in_state result;
+    size_t i;
+
+    memset(&result, 0, sizeof(agtype_in_state));
+
+    result.res = push_agtype_value(&result.parse_state, WAGT_BEGIN_OBJECT,
+                                   NULL);
+
+    key_agtype = string_to_agtype_value("__id__");
+    result.res = push_agtype_value(&result.parse_state,
+                                   WAGT_KEY,
+                                   key_agtype);
+
+    value_agtype = integer_to_agtype_value(vertex_id);
+    result.res = push_agtype_value(&result.parse_state,
+                                   WAGT_VALUE,
+                                   value_agtype);
+
+    for (i = 0; i < fields_len; i++)
+    {
+        char *trimmed_value;
+
+        if (skip != NULL && skip[i])
+        {
+            continue;
+        }
+
+        if (header[i] == NULL || header[i][0] == '\0')
+        {
+            continue;
+        }
+
+        key_agtype = string_to_agtype_value(header[i]);
+        result.res = push_agtype_value(&result.parse_state,
+                                       WAGT_KEY,
+                                       key_agtype);
+
+        trimmed_value = trim_whitespace(fields[i]);
+
+        if (load_as_agtype)
+        {
+            value_agtype = csv_value_to_agtype_value(trimmed_value);
+        }
+        else
+        {
+            if (trimmed_value[0] == '\0')
+            {
+                value_agtype = palloc(sizeof(agtype_value));
+                value_agtype->type = AGTV_STRING;
+                value_agtype->val.string.len = 0;
+                value_agtype->val.string.val = pstrdup("");
+            }
+            else
+            {
+                value_agtype = string_to_agtype_value(trimmed_value);
+            }
+        }
+
+        result.res = push_agtype_value(&result.parse_state,
+                                       WAGT_VALUE,
+                                       value_agtype);
+    }
+
+    result.res = push_agtype_value(&result.parse_state,
+                                   WAGT_END_OBJECT, NULL);
+
+    out = agtype_value_to_agtype(result.res);
+    pfree_agtype_in_state(&result);
+
+    return out;
+}
+
 agtype* create_agtype_from_list_i(char **header, char **fields,
                                   size_t fields_len, size_t start_index,
                                   bool load_as_agtype)
@@ -408,6 +495,80 @@ agtype* create_agtype_from_list_i(char **header, char **fields,
     out = agtype_value_to_agtype(result.res);
 
     /* now that it is serialized we can free the in memory structure */
+    pfree_agtype_in_state(&result);
+
+    return out;
+}
+
+agtype* create_agtype_from_list_i_skip(char **header, char **fields,
+                                       size_t fields_len, size_t start_index,
+                                       bool load_as_agtype, bool *skip)
+{
+    agtype* out;
+    agtype_value* key_agtype;
+    agtype_value* value_agtype;
+    agtype_in_state result;
+    size_t i;
+
+    if (start_index >= fields_len)
+    {
+        return create_empty_agtype();
+    }
+
+    memset(&result, 0, sizeof(agtype_in_state));
+
+    result.res = push_agtype_value(&result.parse_state, WAGT_BEGIN_OBJECT,
+                                   NULL);
+
+    for (i = start_index; i < fields_len; i++)
+    {
+        char *trimmed_value;
+
+        if (skip != NULL && skip[i])
+        {
+            continue;
+        }
+
+        if (header[i] == NULL || header[i][0] == '\0')
+        {
+            continue;
+        }
+
+        key_agtype = string_to_agtype_value(header[i]);
+        result.res = push_agtype_value(&result.parse_state,
+                                       WAGT_KEY,
+                                       key_agtype);
+
+        trimmed_value = trim_whitespace(fields[i]);
+
+        if (load_as_agtype)
+        {
+            value_agtype = csv_value_to_agtype_value(trimmed_value);
+        }
+        else
+        {
+            if (trimmed_value[0] == '\0')
+            {
+                value_agtype = palloc(sizeof(agtype_value));
+                value_agtype->type = AGTV_STRING;
+                value_agtype->val.string.len = 0;
+                value_agtype->val.string.val = pstrdup("");
+            }
+            else
+            {
+                value_agtype = string_to_agtype_value(trimmed_value);
+            }
+        }
+
+        result.res = push_agtype_value(&result.parse_state,
+                                       WAGT_VALUE,
+                                       value_agtype);
+    }
+
+    result.res = push_agtype_value(&result.parse_state,
+                                   WAGT_END_OBJECT, NULL);
+
+    out = agtype_value_to_agtype(result.res);
     pfree_agtype_in_state(&result);
 
     return out;
@@ -693,6 +854,172 @@ Datum load_edges_from_file(PG_FUNCTION_ARGS)
 
     create_edges_from_csv_file(file_path_str, graph_name_str, graph_oid,
                                label_name_str, label_id, load_as_agtype);
+
+    free(file_path_str);
+
+    PG_RETURN_VOID();
+}
+
+Datum load_labels_with_spatial_from_file(PG_FUNCTION_ARGS)
+{
+    Name graph_name;
+    Name label_name;
+    text* file_name;
+    Jsonb *spatial_spec = NULL;
+    char* graph_name_str;
+    char* label_name_str;
+    char* file_path_str;
+    Oid graph_oid;
+    Oid label_relid;
+    int32 label_id;
+    bool id_field_exists;
+    bool load_as_agtype;
+    spatial_load_column *spatial_columns;
+    int num_spatial_columns;
+
+    if (PG_ARGISNULL(0))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("graph name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(1))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("label name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(2))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("file path must not be NULL")));
+    }
+
+    check_file_read_permission();
+
+    graph_name = PG_GETARG_NAME(0);
+    label_name = PG_GETARG_NAME(1);
+    file_name = PG_GETARG_TEXT_P(2);
+    id_field_exists = PG_GETARG_BOOL(3);
+    load_as_agtype = PG_GETARG_BOOL(4);
+
+    if (!PG_ARGISNULL(5))
+    {
+        spatial_spec = PG_GETARG_JSONB_P(5);
+    }
+
+    graph_name_str = NameStr(*graph_name);
+    label_name_str = NameStr(*label_name);
+
+    if (strcmp(label_name_str, "") == 0)
+    {
+        label_name_str = AG_DEFAULT_LABEL_VERTEX;
+    }
+
+    file_path_str = build_safe_filename(text_to_cstring(file_name));
+
+    graph_oid = get_or_create_graph(graph_name);
+    label_id = get_or_create_label(graph_oid, graph_name_str,
+                                   label_name_str, LABEL_KIND_VERTEX);
+
+    spatial_columns = parse_spatial_load_spec(spatial_spec,
+                                              &num_spatial_columns);
+    ensure_spatial_columns_for_load(graph_name_str, label_name_str,
+                                    LABEL_KIND_VERTEX, spatial_columns,
+                                    num_spatial_columns);
+    CommandCounterIncrement();
+
+    label_relid = get_label_relation(label_name_str, graph_oid);
+    check_table_permissions(label_relid);
+    check_rls_for_load(label_relid);
+
+    create_labels_with_spatial_from_csv_file(file_path_str, graph_name_str,
+                                             graph_oid, label_name_str,
+                                             label_id, id_field_exists,
+                                             load_as_agtype, spatial_columns,
+                                             num_spatial_columns);
+
+    free(file_path_str);
+
+    PG_RETURN_VOID();
+}
+
+Datum load_edges_with_spatial_from_file(PG_FUNCTION_ARGS)
+{
+    Name graph_name;
+    Name label_name;
+    text* file_name;
+    Jsonb *spatial_spec = NULL;
+    char* graph_name_str;
+    char* label_name_str;
+    char* file_path_str;
+    Oid graph_oid;
+    Oid label_relid;
+    int32 label_id;
+    bool load_as_agtype;
+    spatial_load_column *spatial_columns;
+    int num_spatial_columns;
+
+    if (PG_ARGISNULL(0))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("graph name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(1))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("label name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(2))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("file path must not be NULL")));
+    }
+
+    check_file_read_permission();
+
+    graph_name = PG_GETARG_NAME(0);
+    label_name = PG_GETARG_NAME(1);
+    file_name = PG_GETARG_TEXT_P(2);
+    load_as_agtype = PG_GETARG_BOOL(3);
+
+    if (!PG_ARGISNULL(4))
+    {
+        spatial_spec = PG_GETARG_JSONB_P(4);
+    }
+
+    graph_name_str = NameStr(*graph_name);
+    label_name_str = NameStr(*label_name);
+
+    if (strcmp(label_name_str, "") == 0)
+    {
+        label_name_str = AG_DEFAULT_LABEL_EDGE;
+    }
+
+    file_path_str = build_safe_filename(text_to_cstring(file_name));
+
+    graph_oid = get_or_create_graph(graph_name);
+    label_id = get_or_create_label(graph_oid, graph_name_str,
+                                   label_name_str, LABEL_KIND_EDGE);
+
+    spatial_columns = parse_spatial_load_spec(spatial_spec,
+                                              &num_spatial_columns);
+    ensure_spatial_columns_for_load(graph_name_str, label_name_str,
+                                    LABEL_KIND_EDGE, spatial_columns,
+                                    num_spatial_columns);
+    CommandCounterIncrement();
+
+    label_relid = get_label_relation(label_name_str, graph_oid);
+    check_table_permissions(label_relid);
+    check_rls_for_load(label_relid);
+
+    create_edges_with_spatial_from_csv_file(file_path_str, graph_name_str,
+                                            graph_oid, label_name_str,
+                                            label_id, load_as_agtype,
+                                            spatial_columns,
+                                            num_spatial_columns);
 
     free(file_path_str);
 

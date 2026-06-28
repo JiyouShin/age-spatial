@@ -16,3 +16,8 @@ __pycache__
 
 drivers/python/build
 *.bc
+
+# Large local benchmark inputs and generated artifacts
+benchmark/data/
+benchmark/paper/
+benchmark/results/

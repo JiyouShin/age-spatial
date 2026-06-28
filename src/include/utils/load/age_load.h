@@ -34,6 +34,24 @@
 #define BATCH_SIZE 1000
 #define MAX_BUFFERED_BYTES 65535  /* 64KB, same as pg COPY */
 
+agtype *create_agtype_from_list_skip(
+    char **header,
+    char **fields,
+    size_t fields_len,
+    int64 vertex_id,
+    bool load_as_agtype,
+    bool *skip
+);
+
+agtype *create_agtype_from_list_i_skip(
+    char **header,
+    char **fields,
+    size_t fields_len,
+    size_t start_index,
+    bool load_as_agtype,
+    bool *skip
+);
+
 typedef struct batch_insert_state
 {
     EState *estate;

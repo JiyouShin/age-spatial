@@ -132,6 +132,28 @@ CREATE FUNCTION ag_catalog.drop_label(graph_name name, label_name name,
     LANGUAGE c
     AS 'MODULE_PATHNAME';
 
+-- load labels and edges with spatial data from CSV files
+CREATE FUNCTION ag_catalog.load_labels_with_spatial_from_file(
+    graph_name name,
+    label_name name,
+    file_path text,
+    id_field_exists bool DEFAULT true,
+    load_as_agtype bool DEFAULT false,
+    spatial_spec jsonb DEFAULT '{}'::jsonb
+) RETURNS void
+LANGUAGE c
+AS 'MODULE_PATHNAME';
+
+CREATE FUNCTION ag_catalog.load_edges_with_spatial_from_file(
+    graph_name name,
+    label_name name,
+    file_path text,
+    load_as_agtype bool DEFAULT false,
+    spatial_spec jsonb DEFAULT '{}'::jsonb
+) RETURNS void
+LANGUAGE c
+AS 'MODULE_PATHNAME';
+
 --
 -- If `load_as_agtype` is true, property values are loaded as agtype; otherwise
 -- loaded as string.

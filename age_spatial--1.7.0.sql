@@ -132,6 +132,28 @@ CREATE FUNCTION ag_catalog.drop_label(graph_name name, label_name name,
     LANGUAGE c
     AS 'MODULE_PATHNAME';
 
+-- load labels and edges with spatial data from CSV files
+CREATE FUNCTION ag_catalog.load_labels_with_spatial_from_file(
+    graph_name name,
+    label_name name,
+    file_path text,
+    id_field_exists bool DEFAULT true,
+    load_as_agtype bool DEFAULT false,
+    spatial_spec jsonb DEFAULT '{}'::jsonb
+) RETURNS void
+LANGUAGE c
+AS 'MODULE_PATHNAME';
+
+CREATE FUNCTION ag_catalog.load_edges_with_spatial_from_file(
+    graph_name name,
+    label_name name,
+    file_path text,
+    load_as_agtype bool DEFAULT false,
+    spatial_spec jsonb DEFAULT '{}'::jsonb
+) RETURNS void
+LANGUAGE c
+AS 'MODULE_PATHNAME';
+
 --
 -- If `load_as_agtype` is true, property values are loaded as agtype; otherwise
 -- loaded as string.
@@ -5748,6 +5770,160 @@ BEGIN
         p_geometry_type,
         p_srid,
         p_create_index
+    );
+END;
+$$;
+
+CREATE FUNCTION ag_catalog._ensure_spatial_column_for_load(
+    p_graph_name name,
+    p_label_name name,
+    p_label_kind text,
+    p_column_name name,
+    p_spatial_type text,
+    p_geometry_type text DEFAULT 'Geometry',
+    p_srid integer DEFAULT 4326,
+    p_create_if_missing boolean DEFAULT true,
+    p_create_index boolean DEFAULT true
+)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_relation_oid oid;
+    v_label_kind char(1);
+    v_relation regclass;
+    v_physical_exists boolean;
+    v_actual_type text;
+    v_meta ag_catalog.ag_spatial_columns%ROWTYPE;
+BEGIN
+    IF p_label_kind NOT IN ('v', 'e') THEN
+        RAISE EXCEPTION 'label kind must be v or e: %', p_label_kind;
+    END IF;
+
+    PERFORM ag_catalog._validate_spatial_column_args(
+        p_column_name,
+        p_spatial_type,
+        COALESCE(NULLIF(p_geometry_type, ''), 'Geometry'),
+        COALESCE(p_srid, 4326)
+    );
+
+    SELECT relation_oid, label_kind
+    INTO v_relation_oid, v_label_kind
+    FROM ag_catalog._get_label_relation(p_graph_name, p_label_name);
+
+    IF v_label_kind::text <> p_label_kind THEN
+        RAISE EXCEPTION 'AGE label "%.%" is kind %, expected %',
+            p_graph_name, p_label_name, v_label_kind, p_label_kind;
+    END IF;
+
+    v_relation := v_relation_oid::regclass;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_attribute
+        WHERE attrelid = v_relation_oid
+          AND attname = p_column_name
+          AND NOT attisdropped
+    )
+    INTO v_physical_exists;
+
+    IF v_physical_exists THEN
+        SELECT a.atttypid::regtype::text
+        INTO v_actual_type
+        FROM pg_catalog.pg_attribute a
+        WHERE a.attrelid = v_relation_oid
+          AND a.attname = p_column_name
+          AND NOT a.attisdropped;
+    END IF;
+
+    SELECT *
+    INTO v_meta
+    FROM ag_catalog.ag_spatial_columns
+    WHERE graph_name = p_graph_name
+      AND label_name = p_label_name
+      AND column_name = p_column_name;
+
+    IF FOUND THEN
+        IF NOT v_physical_exists THEN
+            RAISE EXCEPTION
+                'spatial metadata exists for "%.%.%" but physical column is missing',
+                p_graph_name, p_label_name, p_column_name
+                USING HINT =
+                    'Drop and recreate the spatial column metadata, or repair the physical column before loading.';
+        END IF;
+
+        IF v_meta.label_kind::text <> p_label_kind THEN
+            RAISE EXCEPTION 'spatial column "%.%.%" is registered for label kind %, expected %',
+                p_graph_name, p_label_name, p_column_name, v_meta.label_kind,
+                p_label_kind;
+        END IF;
+
+        IF v_meta.relation_oid <> v_relation_oid THEN
+            RAISE EXCEPTION
+                'spatial metadata for "%.%.%" points to relation %, expected %',
+                p_graph_name, p_label_name, p_column_name,
+                v_meta.relation_oid, v_relation_oid;
+        END IF;
+
+        IF v_meta.spatial_type <> p_spatial_type THEN
+            RAISE EXCEPTION 'spatial type mismatch for "%.%.%": expected %, got %',
+                p_graph_name, p_label_name, p_column_name,
+                v_meta.spatial_type, p_spatial_type;
+        END IF;
+
+        IF lower(COALESCE(v_meta.geometry_type, 'Geometry')) <>
+           lower(COALESCE(NULLIF(p_geometry_type, ''), 'Geometry')) THEN
+            RAISE EXCEPTION 'geometry type mismatch for "%.%.%": expected %, got %',
+                p_graph_name, p_label_name, p_column_name,
+                v_meta.geometry_type, p_geometry_type;
+        END IF;
+
+        IF v_meta.srid <> COALESCE(p_srid, 4326) THEN
+            RAISE EXCEPTION 'SRID mismatch for "%.%.%": expected %, got %',
+                p_graph_name, p_label_name, p_column_name,
+                v_meta.srid, COALESCE(p_srid, 4326);
+        END IF;
+
+        IF lower(v_actual_type) <> p_spatial_type
+           AND lower(v_actual_type) NOT LIKE '%.' || p_spatial_type THEN
+            RAISE EXCEPTION 'physical column "%.%.%" has type %, expected %',
+                p_graph_name, p_label_name, p_column_name,
+                v_actual_type, p_spatial_type;
+        END IF;
+
+        PERFORM ag_catalog._assert_no_spatial_property_key_conflict(
+            p_graph_name,
+            p_label_name,
+            p_column_name,
+            v_relation
+        );
+
+        RETURN;
+    END IF;
+
+    IF v_physical_exists THEN
+        RAISE EXCEPTION
+            'physical column "%.%.%" exists but is not registered in ag_spatial_columns',
+            p_graph_name, p_label_name, p_column_name
+            USING HINT =
+                'Register the column through the age_spatial API or remove it before using the spatial CSV loader.';
+    END IF;
+
+    IF NOT COALESCE(p_create_if_missing, true) THEN
+        RAISE EXCEPTION 'registered spatial column "%.%.%" not found',
+            p_graph_name, p_label_name, p_column_name
+            USING HINT =
+                'Set create_if_missing=true in the spatial load spec or create the spatial column first.';
+    END IF;
+
+    PERFORM ag_catalog._add_spatial_column(
+        p_graph_name,
+        p_label_name,
+        p_column_name,
+        p_spatial_type,
+        COALESCE(NULLIF(p_geometry_type, ''), 'Geometry'),
+        COALESCE(p_srid, 4326),
+        COALESCE(p_create_index, true)
     );
 END;
 $$;

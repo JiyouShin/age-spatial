@@ -7,3 +7,6 @@ build.sh
 .DS_Store
 *.tokens
 *.interp
+benchmark/data/
+benchmark/paper/
+benchmark/results/
