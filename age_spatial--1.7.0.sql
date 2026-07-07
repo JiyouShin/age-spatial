@@ -6125,6 +6125,46 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION ag_catalog.get_geometry_value_by_id(
+    p_graph_name text,
+    p_column_name text,
+    p_entity_id ag_catalog.graphid
+)
+RETURNS @extschema:postgis@.geometry
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_relation regclass;
+    v_label_name name;
+    v_value @extschema:postgis@.geometry;
+BEGIN
+    SELECT s.relation_oid::regclass, s.label_name
+    INTO v_relation, v_label_name
+    FROM ag_catalog.ag_spatial_columns s
+    JOIN ag_catalog.ag_graph g
+      ON g.name = s.graph_name
+    JOIN ag_catalog.ag_label l
+      ON l.graph = g.graphid
+     AND l.name = s.label_name
+     AND l.id = ag_catalog._extract_label_id(p_entity_id)
+    WHERE s.graph_name = p_graph_name::name
+      AND s.column_name = p_column_name::name
+      AND s.spatial_type = 'geometry'
+    LIMIT 1;
+
+    IF v_relation IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    EXECUTE format('SELECT %I FROM %s WHERE id = $1', p_column_name, v_relation)
+    INTO v_value
+    USING p_entity_id;
+
+    RETURN v_value;
+END;
+$$;
+
 CREATE FUNCTION ag_catalog.get_geography_value(
     p_graph_name text,
     p_label_name text,
@@ -6150,6 +6190,46 @@ BEGIN
     IF v_relation IS NULL THEN
         RAISE EXCEPTION 'registered geography column "%.%.%" not found',
             p_graph_name, p_label_name, p_column_name;
+    END IF;
+
+    EXECUTE format('SELECT %I FROM %s WHERE id = $1', p_column_name, v_relation)
+    INTO v_value
+    USING p_entity_id;
+
+    RETURN v_value;
+END;
+$$;
+
+CREATE FUNCTION ag_catalog.get_geography_value_by_id(
+    p_graph_name text,
+    p_column_name text,
+    p_entity_id ag_catalog.graphid
+)
+RETURNS @extschema:postgis@.geography
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_relation regclass;
+    v_label_name name;
+    v_value @extschema:postgis@.geography;
+BEGIN
+    SELECT s.relation_oid::regclass, s.label_name
+    INTO v_relation, v_label_name
+    FROM ag_catalog.ag_spatial_columns s
+    JOIN ag_catalog.ag_graph g
+      ON g.name = s.graph_name
+    JOIN ag_catalog.ag_label l
+      ON l.graph = g.graphid
+     AND l.name = s.label_name
+     AND l.id = ag_catalog._extract_label_id(p_entity_id)
+    WHERE s.graph_name = p_graph_name::name
+      AND s.column_name = p_column_name::name
+      AND s.spatial_type = 'geography'
+    LIMIT 1;
+
+    IF v_relation IS NULL THEN
+        RETURN NULL;
     END IF;
 
     EXECUTE format('SELECT %I FROM %s WHERE id = $1', p_column_name, v_relation)

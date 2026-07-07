@@ -27,6 +27,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_proc.h"
 #include "catalog/dependency.h"
+#include "catalog/ag_label.h"
 #include "commands/extension.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -45,6 +46,7 @@
 
 #include "parser/cypher_expr.h"
 #include "parser/cypher_transform_entity.h"
+#include "commands/label_commands.h"
 #include "utils/ag_func.h"
 #include "utils/agtype.h"
 #include "executor/spi.h"
@@ -1554,6 +1556,54 @@ static Node *make_spatial_value_getter_expr(cypher_parsestate *cpstate,
                                 InvalidOid, COERCE_EXPLICIT_CALL);
 }
 
+static Node *make_dynamic_spatial_value_getter_expr(cypher_parsestate *cpstate,
+                                                    char *varname,
+                                                    char *colname,
+                                                    spatial_column_cache_entry *entry,
+                                                    int location)
+{
+    ParseState *pstate = &cpstate->pstate;
+    Node *entity_node;
+    Node *id_node;
+    Node *graph_name;
+    Node *column_name_const;
+    char *spatial_type;
+    char *func_name;
+    Oid func_oid;
+    List *args;
+
+    entity_node = colNameToVar(pstate, varname, false, location);
+    if (entity_node == NULL || !is_vertex_or_edge(entity_node))
+        return NULL;
+
+    id_node = extract_field_from_record(entity_node, "id");
+
+    spatial_type = get_postgis_spatial_type_name(entry->type_oid);
+    if (spatial_type == NULL)
+        return NULL;
+
+    if (strcmp(spatial_type, "geometry") == 0)
+        func_name = "get_geometry_value_by_id";
+    else
+        func_name = "get_geography_value_by_id";
+
+    graph_name = (Node *)makeConst(TEXTOID, -1, InvalidOid, -1,
+                                   CStringGetTextDatum(cpstate->graph_name),
+                                   false, false);
+    column_name_const = (Node *)makeConst(TEXTOID, -1, InvalidOid, -1,
+                                          CStringGetTextDatum(colname),
+                                          false, false);
+
+    func_oid = get_ag_func_oid(func_name, 3, TEXTOID, TEXTOID, GRAPHIDOID);
+
+    args = list_make3(graph_name, column_name_const, id_node);
+
+    pfree(spatial_type);
+
+    return (Node *)makeFuncExpr(func_oid, entry->type_oid, args, InvalidOid,
+                                InvalidOid, COERCE_EXPLICIT_CALL);
+}
+
 /* look up metadata and cache function for physical geometry column reference */
 static spatial_column_cache_entry *lookup_spatial_column_cache(
     cypher_parsestate *cpstate, char *label_name, char *column_name)
@@ -1641,6 +1691,128 @@ static spatial_column_cache_entry *lookup_spatial_column_cache(
     return entry;
 }
 
+static spatial_column_cache_entry *lookup_spatial_column_cache_any_label(
+    cypher_parsestate *cpstate, char *column_name, char label_kind)
+{
+    cypher_parsestate *root = get_root_cpstate(cpstate);
+    ListCell *lc;
+    spatial_column_cache_entry *entry;
+    Oid relid = InvalidOid;
+    Oid type_oid = InvalidOid;
+    bool found = false;
+    char *cache_label_name;
+    char label_kind_str[2];
+
+    cache_label_name = psprintf("*%c", label_kind);
+    label_kind_str[0] = label_kind;
+    label_kind_str[1] = '\0';
+
+    foreach (lc, root->spatial_column_cache)
+    {
+        entry = lfirst(lc);
+
+        if (entry->graph_oid == cpstate->graph_oid &&
+            strcmp(entry->label_name, cache_label_name) == 0 &&
+            strcmp(entry->column_name, column_name) == 0)
+        {
+            pfree(cache_label_name);
+            return entry;
+        }
+    }
+
+    entry = palloc0(sizeof(spatial_column_cache_entry));
+    entry->graph_oid = cpstate->graph_oid;
+    entry->label_name = cache_label_name;
+    entry->column_name = pstrdup(column_name);
+
+    if (SPI_connect() != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed");
+
+    {
+        Oid argtypes[3] = {TEXTOID, TEXTOID, TEXTOID};
+        Datum values[3];
+
+        values[0] = CStringGetTextDatum(cpstate->graph_name);
+        values[1] = CStringGetTextDatum(column_name);
+        values[2] = CStringGetTextDatum(label_kind_str);
+
+        if (SPI_execute_with_args(
+                "SELECT DISTINCT ON (spatial_type) spatial_type, relation_oid "
+                "FROM ag_catalog.ag_spatial_columns "
+                "WHERE graph_name = $1::name "
+                "  AND column_name = $2::name "
+                "  AND label_kind = $3::char(1) "
+                "ORDER BY spatial_type, relation_oid "
+                "LIMIT 2",
+                3, argtypes, values, NULL, true, 2) != SPI_OK_SELECT)
+        {
+            elog(ERROR, "failed to query ag_spatial_columns");
+        }
+
+        if (SPI_processed > 0)
+        {
+            bool isnull;
+            Datum datum;
+            char *first_spatial_type;
+
+            datum = SPI_getbinval(SPI_tuptable->vals[0],
+                                  SPI_tuptable->tupdesc,
+                                  1,
+                                  &isnull);
+            first_spatial_type = TextDatumGetCString(datum);
+
+            if (SPI_processed > 1)
+            {
+                Datum second_datum;
+                char *second_spatial_type;
+
+                second_datum = SPI_getbinval(SPI_tuptable->vals[1],
+                                             SPI_tuptable->tupdesc,
+                                             1,
+                                             &isnull);
+                second_spatial_type = TextDatumGetCString(second_datum);
+
+                if (strcmp(first_spatial_type, second_spatial_type) != 0)
+                {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_AMBIGUOUS_COLUMN),
+                             errmsg("spatial column \"%s\" is registered as both geometry and geography in graph \"%s\"",
+                                    column_name, cpstate->graph_name),
+                             errhint("Use a label-qualified pattern so the spatial column type is unambiguous.")));
+                }
+            }
+
+            datum = SPI_getbinval(SPI_tuptable->vals[0],
+                                  SPI_tuptable->tupdesc,
+                                  2,
+                                  &isnull);
+            if (!isnull)
+            {
+                AttrNumber attnum;
+
+                relid = DatumGetObjectId(datum);
+                attnum = get_attnum(relid, column_name);
+
+                if (attnum != InvalidAttrNumber)
+                {
+                    type_oid = get_atttype(relid, attnum);
+                    found = is_postgis_spatial_type(type_oid);
+                }
+            }
+        }
+    }
+
+    SPI_finish();
+
+    entry->found = found;
+    entry->relation_oid = relid;
+    entry->type_oid = type_oid;
+
+    root->spatial_column_cache = lappend(root->spatial_column_cache, entry);
+
+    return entry;
+}
+
 static Node *transform_spatial_physical_column_ref(cypher_parsestate *cpstate,
                                                    ColumnRef *cr,
                                                    A_Indirection *a_ind)
@@ -1656,6 +1828,7 @@ static Node *transform_spatial_physical_column_ref(cypher_parsestate *cpstate,
     ParseNamespaceItem *pnsi;
     Node *column;
     int levels_up = 0;
+    char label_kind = 0;
 
     if (list_length(cr->fields) != 1 ||
         list_length(a_ind->indirection) != 1)
@@ -1675,14 +1848,31 @@ static Node *transform_spatial_physical_column_ref(cypher_parsestate *cpstate,
         return NULL;
 
     if (entity->type == ENT_VERTEX)
+    {
         label_name = entity->entity.node->label;
+        label_kind = 'v';
+    }
     else if (entity->type == ENT_EDGE)
+    {
         label_name = entity->entity.rel->label;
+        label_kind = 'e';
+    }
     else
         return NULL;
 
-    if (label_name == NULL)
-        return NULL;
+    if (label_name == NULL ||
+        (label_kind == LABEL_KIND_VERTEX && IS_DEFAULT_LABEL_VERTEX(label_name)) ||
+        (label_kind == LABEL_KIND_EDGE && IS_DEFAULT_LABEL_EDGE(label_name)))
+    {
+        entry = lookup_spatial_column_cache_any_label(cpstate, colname,
+                                                      label_kind);
+        if (!entry->found)
+            return NULL;
+
+        return make_dynamic_spatial_value_getter_expr(cpstate, varname,
+                                                      colname, entry,
+                                                      cr->location);
+    }
 
     entry = lookup_spatial_column_cache(cpstate, label_name, colname);
     if (!entry->found)
