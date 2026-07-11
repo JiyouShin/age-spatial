@@ -21,3 +21,4 @@ drivers/python/build
 benchmark/data/
 benchmark/paper/
 benchmark/results/
+benchmark/queries/GeoQuestions1089*
