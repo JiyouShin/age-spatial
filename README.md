@@ -286,7 +286,7 @@ reference answer under the benchmark normalizer.
 | AGE-Spatial with NO uri property index | 222 | 203 | 18 | 1 | 0 | 162 | 41 | 19 | 2220.907 | 
 | AGE-Spatial with uri property index | 222 | 206 | 15 | 1 | 0 | 165 | 41 | 16 | 1565.199 | 
 | Jena GeoSPARQL | 222 | 210 | 0 | 12 | 0 | 109 | 101 | 12 | 2522.745 |
-| Virtuoso GeoSPARQL / BIF hybrid | 222 | 127 | 0 | 23 | 72 | 62 | 65 | 95 | 
+| Virtuoso GeoSPARQL / BIF hybrid | 222 | 127 | 0 | 23 | 72 | 62 | 65 | 95 | 4307.255
 | Strabon | 222 | 168 | 7 | 44 | 3 | 140 | 28 | 54 | 6216.581 | 1223.315 |
 
 Notes:
