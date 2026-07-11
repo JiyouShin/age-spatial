@@ -18,6 +18,10 @@ drivers/python/build
 *.bc
 
 # Large local benchmark inputs and generated artifacts
+benchmark/
+docker/
+docs/
+README_AGE_SPATIAL.md
 benchmark/data/
 benchmark/paper/
 benchmark/results/
