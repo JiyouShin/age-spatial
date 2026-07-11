@@ -21,6 +21,7 @@ drivers/python/build
 benchmark/
 docker/
 docs/
+img/
 README_AGE_SPATIAL.md
 benchmark/data/
 benchmark/paper/
