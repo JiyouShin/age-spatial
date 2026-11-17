@@ -1,0 +1,29 @@
+{
+  "physical_columns_no_optional_indexes": {
+    "all_index_bytes": 24797184,
+    "gist_index_bytes": 0,
+    "metadata_catalog_bytes": 155648,
+    "metadata_rows": 34,
+    "physical_table_bytes": 598409216,
+    "total_storage_bytes": 623206400,
+    "uri_index_bytes": 0
+  },
+  "with_gist": {
+    "all_index_bytes": 26427392,
+    "gist_index_bytes": 1630208,
+    "metadata_catalog_bytes": 163840,
+    "metadata_rows": 34,
+    "physical_table_bytes": 598409216,
+    "total_storage_bytes": 624836608,
+    "uri_index_bytes": 0
+  },
+  "with_gist_and_uri": {
+    "all_index_bytes": 31571968,
+    "gist_index_bytes": 1630208,
+    "metadata_catalog_bytes": 163840,
+    "metadata_rows": 34,
+    "physical_table_bytes": 598507520,
+    "total_storage_bytes": 630079488,
+    "uri_index_bytes": 5144576
+  }
+}

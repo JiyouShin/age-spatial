@@ -1,0 +1,4 @@
+benchmark/artifact/data/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+benchmark/queries/GeoQuestions1089Answers.json filter=lfs diff=lfs merge=lfs -text
+benchmark/results/geoquestions/age_spatial_full/geoquestions_age_spatial_full_queries.csv filter=lfs diff=lfs merge=lfs -text
+benchmark/results/geoquestions/invalid_geometry/*.csv filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,43 @@
+diff --git a/generaldb/src/main/java/org/openrdf/generaldb/managers/base/ManagerBase.java b/generaldb/src/main/java/org/openrdf/generaldb/managers/base/ManagerBase.java
+--- a/generaldb/src/main/java/org/openrdf/generaldb/managers/base/ManagerBase.java
++++ b/generaldb/src/main/java/org/openrdf/generaldb/managers/base/ManagerBase.java
+@@ -134,19 +134,28 @@ public abstract class ManagerBase {
+ 		logger.debug("Starting helper thread {}", name);
+ 		int notReadyCount = 0;
+ 		for (wb = queue.take(); isFlushable(wb); wb = queue.take()) {
+-			if (wb.isReady() || queue.size() <= notReadyCount) {
+-				synchronized (working) {
+-					if (wb != null) {
+-						flush(wb);
+-						wb = null;
+-					}
++			boolean shouldOptimize = false;
++			synchronized (working) {
++				if (wb == null) {
++					notReadyCount = 0;
++					continue;
++				}
++
++				if (wb.isReady() || queue.size() <= notReadyCount) {
++					flush(wb);
++					wb = null;
++					shouldOptimize = true;
++					notReadyCount = 0;
++				}
++				else {
++					queue.add(wb);
++					wb = null;
++					notReadyCount++;
+ 				}
+-				optimize();
+-				notReadyCount = 0;
+ 			}
+-			else {
+-				queue.add(wb);
+-				notReadyCount++;
++
++			if (shouldOptimize) {
++				optimize();
+ 			}
+ 		}
+ 		logger.debug("Closing helper thread {}", name);

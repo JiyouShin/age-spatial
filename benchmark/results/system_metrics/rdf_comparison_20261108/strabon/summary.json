@@ -1,0 +1,51 @@
+{
+  "containers": [
+    "yago2geo-strabon",
+    "yago2geo-strabon-postgis"
+  ],
+  "engine": "strabon",
+  "generated_at_utc": "2026-11-08T14:18:02.757135+00:00",
+  "query": {
+    "answer_mismatch_rate_among_executed": 0.17159763313609466,
+    "attempted_queries": 222,
+    "attempted_query_throughput_qps": 0.049352422882890594,
+    "execution_error_rate": 0.0,
+    "execution_status_counts": {
+      "ERROR_RESPONSE": 8,
+      "HTTP_400": 3,
+      "OK": 169,
+      "TIMEOUT": 42
+    },
+    "latency_p50_ms": 237.362,
+    "latency_p95_ms": 32694.904199999997,
+    "latency_p98_ms": 44039.374759999984,
+    "latency_p99_ms": 52914.05991999997,
+    "match_status_counts": {
+      "match": 140,
+      "mismatch": 29,
+      "not_run": 53
+    },
+    "mean_latency_ms": 6230.826094674557,
+    "query_throughput_qps": 0.03757008769012843,
+    "query_wall_seconds": 4498.259397047,
+    "successful_queries": 169,
+    "successful_query_throughput_qps": 0.03757008769012843,
+    "timeout_rate": 0.1891891891891892
+  },
+  "resources": {
+    "average_cpu_percent": 205.3773811931241,
+    "average_memory_bytes": 9906923920.819887,
+    "block_read_bytes": 50000000.0,
+    "block_write_bytes": 6050000.0,
+    "idle_memory_bytes": 7886679834.624,
+    "incremental_peak_memory_bytes": 23912184283.136,
+    "peak_cpu_percent": 1039.9399999999998,
+    "peak_memory_bytes": 31798864117.760002,
+    "sample_count": 989
+  },
+  "storage": {
+    "bytes": 14260007395,
+    "scope": "Strabon endpoint PostgreSQL database"
+  },
+  "warm_cache": true
+}

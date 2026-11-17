@@ -1,0 +1,49 @@
+{
+  "containers": [
+    "yago2geo-virtuoso"
+  ],
+  "engine": "virtuoso",
+  "generated_at_utc": "2026-11-08T11:40:22.048475+00:00",
+  "query": {
+    "answer_mismatch_rate_among_executed": 0.512,
+    "attempted_queries": 222,
+    "attempted_query_throughput_qps": 0.07950488262057329,
+    "execution_error_rate": 0.0,
+    "execution_status_counts": {
+      "HTTP_500": 72,
+      "OK": 125,
+      "TIMEOUT": 25
+    },
+    "latency_p50_ms": 42.677,
+    "latency_p95_ms": 23945.093399999998,
+    "latency_p98_ms": 36240.08631999998,
+    "latency_p99_ms": 46019.18608000004,
+    "match_status_counts": {
+      "match": 61,
+      "mismatch": 64,
+      "not_run": 97
+    },
+    "mean_latency_ms": 3680.863312,
+    "query_throughput_qps": 0.04476626273680928,
+    "query_wall_seconds": 2792.281337732,
+    "successful_queries": 125,
+    "successful_query_throughput_qps": 0.04476626273680928,
+    "timeout_rate": 0.11261261261261261
+  },
+  "resources": {
+    "average_cpu_percent": 208.91616924476773,
+    "average_memory_bytes": 6870801632.508491,
+    "block_read_bytes": 0.0,
+    "block_write_bytes": 3170000.0,
+    "idle_memory_bytes": 6264209801.216,
+    "incremental_peak_memory_bytes": 2074469203.9680004,
+    "peak_cpu_percent": 604.29,
+    "peak_memory_bytes": 8338679005.184,
+    "sample_count": 1099
+  },
+  "storage": {
+    "bytes": 21974007561,
+    "scope": "entire Virtuoso database directory (contains multiple graphs)"
+  },
+  "warm_cache": true
+}

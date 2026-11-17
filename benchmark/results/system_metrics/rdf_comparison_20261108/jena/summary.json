@@ -1,0 +1,48 @@
+{
+  "containers": [
+    "yago2geo-jena-fuseki"
+  ],
+  "engine": "jena",
+  "generated_at_utc": "2026-11-08T10:06:52.552151+00:00",
+  "query": {
+    "answer_mismatch_rate_among_executed": 0.48095238095238096,
+    "attempted_queries": 222,
+    "attempted_query_throughput_qps": 0.17939195783805614,
+    "execution_error_rate": 0.0,
+    "execution_status_counts": {
+      "OK": 210,
+      "TIMEOUT": 12
+    },
+    "latency_p50_ms": 113.0695,
+    "latency_p95_ms": 17315.755649999926,
+    "latency_p98_ms": 32483.94469999999,
+    "latency_p99_ms": 34135.44554,
+    "match_status_counts": {
+      "match": 109,
+      "mismatch": 101,
+      "not_run": 12
+    },
+    "mean_latency_ms": 2455.486223809524,
+    "query_throughput_qps": 0.16969509525221527,
+    "query_wall_seconds": 1237.513669372,
+    "successful_queries": 210,
+    "successful_query_throughput_qps": 0.16969509525221527,
+    "timeout_rate": 0.05405405405405406
+  },
+  "resources": {
+    "average_cpu_percent": 694.0205942622948,
+    "average_memory_bytes": 22737473253.980152,
+    "block_read_bytes": 0.0,
+    "block_write_bytes": 0.0,
+    "idle_memory_bytes": 21141976514.56,
+    "incremental_peak_memory_bytes": 6571299962.879997,
+    "peak_cpu_percent": 945.28,
+    "peak_memory_bytes": 27713276477.44,
+    "sample_count": 488
+  },
+  "storage": {
+    "bytes": 1270454515,
+    "scope": "target TDB2 dataset directory"
+  },
+  "warm_cache": true
+}

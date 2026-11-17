@@ -1,5 +1,11 @@
 # AGE-Spatial
 
+> **Paper artifact:** The complete experimental materials are preserved on the
+> `paper-artifact-r1` tag. See
+> [`benchmark/artifact/README.md`](benchmark/artifact/README.md) for the UK
+> datasets, 222-question workload, reference answers, evaluation scripts, and
+> measured results.
+
 **AGE-Spatial** is a PostgreSQL extension that extends
 [Apache AGE](https://age.apache.org/) with PostGIS-backed spatial support for
 property graphs.  It allows users to store `geometry` and `geography` values as

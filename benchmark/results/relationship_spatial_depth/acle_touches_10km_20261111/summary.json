@@ -1,0 +1,62 @@
+{
+  "graph": "age_spatial_system_metrics",
+  "workload": "touches_distance",
+  "description": "Exact-hop ward adjacency from Acle with a metric spatial filter",
+  "warmups": 5,
+  "measured_runs": 30,
+  "spatial_candidate_label": "OSM_town",
+  "spatial_predicate": "Endpoint centroid distance from Acle town <= 10 km",
+  "queries": [
+    {
+      "depth": 1,
+      "relationship_pattern": "TOUCHES",
+      "candidate_count_before_spatial": 4,
+      "result_count": 4,
+      "runs": 30,
+      "mean_ms": 1.2462000000000002,
+      "p50_ms": 1.062,
+      "p95_ms": 2.636149999999996,
+      "min_ms": 1.033,
+      "max_ms": 3.208,
+      "explain_execution_ms": 17.323,
+      "explain_planning_ms": 1.443,
+      "plan_node_types": "Aggregate; Index Scan; Nested Loop; Sort",
+      "plan_index_names": "OS_DistrictWard_pkey; TOUCHES_start_id_idx; age_uri_7f8c0f021e8cf5a2ad568b30; age_uri_fc18c95f8d95b42059f99173",
+      "query": "MATCH (s:OS_DistrictWard) -[:TOUCHES]->(w1:OS_DistrictWard), (a:OSM_town) WHERE s.uri = 'http://yago-knowledge.org/resource/Acle' AND a.uri = 'http://yago-knowledge.org/resource/Acle' AND id(w1) <> id(s) AND ST_DistanceSphere( ST_Centroid(w1.geom), ST_Centroid(a.geom) ) <= 10000 RETURN count(DISTINCT w1.uri) AS result_count"
+    },
+    {
+      "depth": 2,
+      "relationship_pattern": "TOUCHES -> TOUCHES",
+      "candidate_count_before_spatial": 15,
+      "result_count": 6,
+      "runs": 30,
+      "mean_ms": 2.7500666666666667,
+      "p50_ms": 2.739,
+      "p95_ms": 2.84945,
+      "min_ms": 2.62,
+      "max_ms": 3.276,
+      "explain_execution_ms": 17.571,
+      "explain_planning_ms": 2.269,
+      "plan_node_types": "Aggregate; Index Only Scan; Index Scan; Nested Loop; Sort",
+      "plan_index_names": "OS_DistrictWard_pkey; TOUCHES_start_id_idx; age_uri_7f8c0f021e8cf5a2ad568b30; age_uri_fc18c95f8d95b42059f99173",
+      "query": "MATCH (s:OS_DistrictWard) -[:TOUCHES]->(w1:OS_DistrictWard) -[:TOUCHES]->(w2:OS_DistrictWard), (a:OSM_town) WHERE s.uri = 'http://yago-knowledge.org/resource/Acle' AND a.uri = 'http://yago-knowledge.org/resource/Acle' AND id(w2) <> id(s) AND ST_DistanceSphere( ST_Centroid(w2.geom), ST_Centroid(a.geom) ) <= 10000 RETURN count(DISTINCT w2.uri) AS result_count"
+    },
+    {
+      "depth": 3,
+      "relationship_pattern": "TOUCHES -> TOUCHES -> TOUCHES",
+      "candidate_count_before_spatial": 38,
+      "result_count": 7,
+      "runs": 30,
+      "mean_ms": 13.85,
+      "p50_ms": 12.3615,
+      "p95_ms": 23.100149999999964,
+      "min_ms": 11.809,
+      "max_ms": 35.015,
+      "explain_execution_ms": 26.711,
+      "explain_planning_ms": 11.125,
+      "plan_node_types": "Aggregate; Index Only Scan; Index Scan; Nested Loop; Sort",
+      "plan_index_names": "OS_DistrictWard_pkey; TOUCHES_start_id_idx; age_uri_7f8c0f021e8cf5a2ad568b30; age_uri_fc18c95f8d95b42059f99173",
+      "query": "MATCH (s:OS_DistrictWard) -[:TOUCHES]->(w1:OS_DistrictWard) -[:TOUCHES]->(w2:OS_DistrictWard) -[:TOUCHES]->(w3:OS_DistrictWard), (a:OSM_town) WHERE s.uri = 'http://yago-knowledge.org/resource/Acle' AND a.uri = 'http://yago-knowledge.org/resource/Acle' AND id(w3) <> id(s) AND ST_DistanceSphere( ST_Centroid(w3.geom), ST_Centroid(a.geom) ) <= 10000 RETURN count(DISTINCT w3.uri) AS result_count"
+    }
+  ]
+}

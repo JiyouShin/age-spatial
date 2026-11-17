@@ -1,0 +1,45 @@
+services:
+  age-spatial-pg:
+    build:
+      context: ../..
+      dockerfile: docker/benchmark/Dockerfile
+      args:
+        POSTGIS_VERSION: "3.6.4"
+        PG_MAJOR: "16"
+    image: age-spatial:pg16-postgis36
+    container_name: age-spatial-pg16
+    environment:
+      POSTGRES_DB: age_spatial_bench
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=age
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - work_mem=64MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - track_io_timing=on
+    ports:
+      - "55432:5432"
+    volumes:
+      - age_spatial_pgdata:/var/lib/postgresql/data
+      - ../../benchmark:/benchmark
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d age_spatial_bench"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  age_spatial_pgdata:
